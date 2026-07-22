@@ -1,0 +1,10 @@
+[package]
+name = "world-tiles"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+world-core = { path = "../world-core" }
+world-gen = { path = "../world-gen" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+rayon = "1"

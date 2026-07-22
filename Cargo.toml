@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/world-core",
+    "crates/world-gen",
+    "crates/world-tiles",
+    "crates/world-server",
+]
+
+[workspace.package]
+edition = "2021"
+
+[profile.release]
+opt-level = 3

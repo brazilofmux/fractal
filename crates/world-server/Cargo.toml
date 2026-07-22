@@ -1,0 +1,11 @@
+[package]
+name = "world-server"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+world-gen = { path = "../world-gen" }
+world-tiles = { path = "../world-tiles" }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { version = "0.6", features = ["fs"] }
