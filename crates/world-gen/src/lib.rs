@@ -11,7 +11,7 @@ use world_core::noise::{fbm, ridged};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 4;
+pub const GEN_VERSION: u32 = 5;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -19,6 +19,13 @@ const STAGE_DETAIL: u64 = 0xDE_7A11;
 const STAGE_RIDGE: u64 = 0x0F_11F7;
 const STAGE_PLATES: u64 = 0x91_A7E5;
 const STAGE_WARP: u64 = 0x3A_D077;
+const STAGE_T_WOBBLE: u64 = 0x7E_3F01;
+const STAGE_P_WOBBLE: u64 = 0x9B_1D22;
+
+/// °C lost per unit of normalized elevation. Gentler than the physical
+/// 6.9 °C/km × 9 km because our terrain carries a lot of mass at mid
+/// elevations — the honest value froze half the world.
+pub const LAPSE_C: f64 = 40.0;
 
 const NUM_PLATES: usize = 14;
 /// Half-width of tectonic boundary belts, in radians of arc (~700 km).
@@ -182,6 +189,152 @@ impl Planet {
     }
 }
 
+pub struct Climate {
+    /// Temperature at sea level, before altitude lapse. °C.
+    pub sea_level_temp_c: f64,
+    /// Temperature at ground elevation. °C.
+    pub temp_c: f64,
+    /// Annual precipitation, normalized 0 (hyperarid) .. 1 (rainforest-wet).
+    pub precip: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Biome {
+    Ocean,
+    IceCap,
+    Tundra,
+    ColdSteppe,
+    Boreal,
+    Desert,
+    Grassland,
+    TemperateForest,
+    TemperateRainforest,
+    Savanna,
+    TropicalForest,
+    TropicalRainforest,
+}
+
+/// Whittaker-style classification from temperature and precipitation.
+/// Callers decide Ocean (elevation < 0) themselves.
+pub fn classify_biome(temp_c: f64, precip: f64) -> Biome {
+    if temp_c < -13.0 {
+        Biome::IceCap
+    } else if temp_c < -4.0 {
+        Biome::Tundra
+    } else if temp_c < 5.0 {
+        if precip < 0.22 {
+            Biome::ColdSteppe
+        } else {
+            Biome::Boreal
+        }
+    } else if temp_c < 20.0 {
+        match precip {
+            p if p < 0.15 => Biome::Desert,
+            p if p < 0.40 => Biome::Grassland,
+            p if p < 0.75 => Biome::TemperateForest,
+            _ => Biome::TemperateRainforest,
+        }
+    } else {
+        match precip {
+            p if p < 0.15 => Biome::Desert,
+            p if p < 0.45 => Biome::Savanna,
+            p if p < 0.70 => Biome::TropicalForest,
+            _ => Biome::TropicalRainforest,
+        }
+    }
+}
+
+impl Planet {
+    /// Macro-scale elevation: enough octaves for climate and hydrology to see
+    /// mountains, cheap enough to sample repeatedly (e.g. upwind).
+    pub fn bulk_elevation(&self, lat: f64, lon: f64) -> f64 {
+        self.elevation(lat, lon, 4)
+    }
+
+    /// Sea-level temperature: insolation bands plus a low-frequency wobble so
+    /// climate zones waver instead of tracing perfect parallels.
+    pub fn sea_level_temperature(&self, lat: f64, lon: f64) -> f64 {
+        let p = lat_lon_to_unit(lat, lon);
+        let s = lat.sin();
+        let band = 29.0 - 44.0 * s * s - 14.0 * s.powi(8);
+        band + 4.0
+            * fbm(
+                splitmix64(self.seed ^ STAGE_T_WOBBLE),
+                [p[0] * 2.5, p[1] * 2.5, p[2] * 2.5],
+                3,
+                2.0,
+                0.5,
+            )
+    }
+
+    /// Precipitation 0..1: zonal bands (wet ITCZ, dry subtropical highs, wet
+    /// storm tracks, dry poles), drier deep inside continents, and orographic
+    /// effects from sampling terrain upwind along the prevailing wind —
+    /// windward slopes wring out moisture, lee sides sit in rain shadow.
+    fn precipitation_at(&self, lat: f64, lon: f64, e_here: f64) -> f64 {
+        let p = lat_lon_to_unit(lat, lon);
+
+        // Let the climate bands wander in latitude, like real jet streams do —
+        // this is what keeps them from tracing ruler-straight parallels.
+        let sp = splitmix64(self.seed ^ STAGE_P_WOBBLE);
+        let drift = 6.0 * fbm(sp, [p[0] * 2.2, p[1] * 2.2, p[2] * 2.2], 3, 2.0, 0.5);
+        let deg_signed = lat.to_degrees() + drift;
+        let deg = deg_signed.abs();
+
+        let mut precip = 0.15
+            + 0.85 * (-(deg_signed / 13.0).powi(2)).exp()
+            + 0.55 * (-((deg - 50.0) / 15.0).powi(2)).exp()
+            - 0.28 * (-((deg - 25.0) / 12.0).powi(2)).exp();
+
+        precip *= 1.0
+            + 0.30
+                * fbm(
+                    splitmix64(sp ^ 0x51DE),
+                    [p[0] * 3.0, p[1] * 3.0, p[2] * 3.0],
+                    3,
+                    2.0,
+                    0.5,
+                );
+
+        // Continentality: the deeper into a landmass, the drier.
+        let c = fbm(
+            splitmix64(self.seed ^ STAGE_CONTINENTS),
+            [p[0] * 1.4, p[1] * 1.4, p[2] * 1.4],
+            4,
+            2.0,
+            0.55,
+        );
+        precip *= 1.0 - 0.45 * smoothstep(0.15, 0.60, c * 1.05 - 0.18);
+
+        // Prevailing wind: trade easterlies in the tropics and polar cells,
+        // westerlies between 30° and 60°. Sample the terrain the air crossed.
+        let westerly = (30.0..60.0).contains(&deg);
+        let dir = if westerly { -1.0 } else { 1.0 };
+        let dlon = dir * (0.045 / lat.cos().abs().max(0.35)).min(0.15);
+        let e_up1 = self.bulk_elevation(lat, lon + dlon).max(0.0);
+        let e_up2 = self.bulk_elevation(lat, lon + 2.0 * dlon).max(0.0);
+        let here = e_here.max(0.0);
+
+        let barrier = e_up1.max(e_up2);
+        let shadow =
+            smoothstep(0.18, 0.50, barrier) * smoothstep(0.0, 0.15, barrier - here);
+        precip *= 1.0 - 0.65 * shadow;
+        precip *= 1.0 + 0.8 * smoothstep(0.04, 0.25, here - e_up1);
+
+        precip.clamp(0.0, 1.0)
+    }
+
+    pub fn climate(&self, lat: f64, lon: f64) -> Climate {
+        let e = self.bulk_elevation(lat, lon);
+        let t_sea = self.sea_level_temperature(lat, lon);
+        Climate {
+            sea_level_temp_c: t_sea,
+            temp_c: t_sea - LAPSE_C * e.max(0.0),
+            precip: self.precipitation_at(lat, lon, e),
+        }
+    }
+}
+
 #[inline]
 fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -246,6 +399,32 @@ mod tests {
             (0.15..0.60).contains(&frac),
             "land fraction {frac} outside plausible range"
         );
+    }
+
+    #[test]
+    fn climate_is_sane() {
+        let planet = Planet::new(42);
+        let mut eq_temps = 0.0;
+        let mut polar_temps = 0.0;
+        for j in 0..40 {
+            let lon = j as f64 / 40.0 * std::f64::consts::TAU - std::f64::consts::PI;
+            let eq = planet.climate(0.0, lon);
+            let po = planet.climate(1.35, lon);
+            assert!((0.0..=1.0).contains(&eq.precip));
+            assert!((0.0..=1.0).contains(&po.precip));
+            assert!(eq.temp_c.is_finite() && po.temp_c.is_finite());
+            eq_temps += eq.sea_level_temp_c;
+            polar_temps += po.sea_level_temp_c;
+        }
+        assert!(
+            eq_temps / 40.0 > polar_temps / 40.0 + 30.0,
+            "equator should be much warmer than 77°N"
+        );
+        // Whittaker corners behave.
+        assert_eq!(classify_biome(25.0, 0.9), Biome::TropicalRainforest);
+        assert_eq!(classify_biome(25.0, 0.05), Biome::Desert);
+        assert_eq!(classify_biome(-20.0, 0.5), Biome::IceCap);
+        assert_eq!(classify_biome(12.0, 0.55), Biome::TemperateForest);
     }
 
     #[test]

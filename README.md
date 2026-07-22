@@ -11,7 +11,7 @@ hand-authoring wall.
 
 See [PLAN.md](PLAN.md) for the full design and phase roadmap.
 
-## Status: Phase 2
+## Status: Phase 3
 
 Seeded planet served as standard Web Mercator XYZ raster tiles and rendered in
 the browser on a MapLibre globe. Tiles are hillshaded (seam-free by
@@ -24,6 +24,15 @@ motion, boundaries classified by relative velocity, and uplift belts where
 plates collide — mountain ranges exist for reasons, island arcs included.
 Toggle the `plates` debug overlay in the viewer to see the mosaic (red seams
 converge, blue seams rift) and check that ranges sit on collisions.
+
+Land colors come from climate, not altitude: temperature from insolation
+bands plus altitude lapse, precipitation from zonal bands (wet ITCZ, dry
+subtropical highs, wet storm tracks) with continentality and true orographic
+rain shadows — terrain is sampled upwind along prevailing winds, so the lee
+of a mountain range is dry because the range is there. Whittaker
+classification maps (temperature, precipitation) to biomes; snow and sea ice
+appear where it is cold, not where it is high. `temperature` and
+`precipitation` debug overlays in the viewer.
 
 ## Run it
 

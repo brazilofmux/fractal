@@ -54,7 +54,10 @@ async fn tile(
     let Ok(y) = y.trim_end_matches(".png").parse::<u32>() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    if !matches!(layer.as_str(), "elevation" | "plates")
+    if !matches!(
+        layer.as_str(),
+        "elevation" | "plates" | "temperature" | "precipitation"
+    )
         || z > MAX_ZOOM
         || x >= (1u32 << z.min(31))
         || y >= (1u32 << z.min(31))
@@ -75,6 +78,8 @@ async fn tile(
     let render_app = app.clone();
     let png = tokio::task::spawn_blocking(move || match layer.as_str() {
         "plates" => world_tiles::render_plates_tile(&render_app.planet, z, x, y),
+        "temperature" => world_tiles::render_temperature_tile(&render_app.planet, z, x, y),
+        "precipitation" => world_tiles::render_precipitation_tile(&render_app.planet, z, x, y),
         _ => world_tiles::render_elevation_tile(&render_app.planet, z, x, y),
     })
     .await

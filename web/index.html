@@ -18,9 +18,12 @@
   <div id="map"></div>
   <div id="hud">
     <span id="pos">fractal</span>
-    <label style="margin-left:10px;cursor:pointer">
-      <input type="checkbox" id="plates-toggle"> plates
-    </label>
+    <select id="overlay" style="margin-left:10px;background:#141a26;color:#cdd6e4;border:1px solid #333;border-radius:4px">
+      <option value="">overlay: none</option>
+      <option value="plates">plates</option>
+      <option value="temperature">temperature</option>
+      <option value="precipitation">precipitation</option>
+    </select>
   </div>
   <script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
   <script>
@@ -42,15 +45,27 @@
             tileSize: 256,
             maxzoom: 22,
           },
+          temperature: {
+            type: 'raster',
+            tiles: ['/tiles/temperature/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            maxzoom: 22,
+          },
+          precipitation: {
+            type: 'raster',
+            tiles: ['/tiles/precipitation/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            maxzoom: 22,
+          },
         },
         layers: [
           { id: 'space', type: 'background', paint: { 'background-color': '#01010a' } },
           { id: 'world', type: 'raster', source: 'world' },
-          {
-            id: 'plates', type: 'raster', source: 'plates',
+          ...['plates', 'temperature', 'precipitation'].map((id) => ({
+            id, type: 'raster', source: id,
             layout: { visibility: 'none' },
             paint: { 'raster-opacity': 0.55 },
-          },
+          })),
         ],
       },
       center: [0, 15],
@@ -61,8 +76,10 @@
       document.getElementById('pos').textContent =
         `fractal · z${map.getZoom().toFixed(1)} · ${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}`;
     });
-    document.getElementById('plates-toggle').addEventListener('change', (e) => {
-      map.setLayoutProperty('plates', 'visibility', e.target.checked ? 'visible' : 'none');
+    document.getElementById('overlay').addEventListener('change', (e) => {
+      for (const id of ['plates', 'temperature', 'precipitation']) {
+        map.setLayoutProperty(id, 'visibility', id === e.target.value ? 'visible' : 'none');
+      }
     });
   </script>
 </body>
