@@ -59,7 +59,9 @@
           },
           rivers: {
             type: 'vector',
-            tiles: ['/tiles/rivers/{z}/{x}/{y}.mvt'],
+            // Vector tiles are fetched from a worker, which cannot resolve
+            // relative URLs — this must be absolute, unlike the raster ones.
+            tiles: [location.origin + '/tiles/rivers/{z}/{x}/{y}.mvt'],
             maxzoom: 16,
           },
         },
