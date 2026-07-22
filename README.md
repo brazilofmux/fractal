@@ -11,7 +11,7 @@ hand-authoring wall.
 
 See [PLAN.md](PLAN.md) for the full design and phase roadmap.
 
-## Status: Phase 4
+## Status: Phase 5
 
 Seeded planet served as standard Web Mercator XYZ raster tiles and rendered in
 the browser on a MapLibre globe. Tiles are hillshaded (seam-free by
@@ -46,6 +46,16 @@ terrain: valleys are carved toward the water surface during elevation
 synthesis (coarse constrains fine), channels flood to the river's level,
 and lakes fill to theirs.
 
+People settled it: every land cell is scored on what settlers want —
+fresh water, workable climate, flat ground, natural harbors — and the
+best sites become cities, towns and villages (tiered, spaced, ~500 of
+them), named by a seeded syllable generator. Ports appear where a good
+site meets a sheltered cove; roads are least-cost paths over the same
+grid the rivers use, hugging valleys and paying to ford. Settlements
+and roads ship as vector tiles (`/tiles/settlements/…`,
+`/tiles/roads/…`); the viewer labels them, and clicking a settlement
+shows its name, kind and realm (allegiance to the nearest city).
+
 ## Run it
 
 ```sh
@@ -62,7 +72,7 @@ XYZ tile layer.
 ## Layout
 
 - `crates/world-core` — positional hashing, gradient noise, sphere/Mercator geometry, cube-sphere grid
-- `crates/world-gen` — the generation pipeline: tectonics → elevation → climate → hydrology
+- `crates/world-gen` — the generation pipeline: tectonics → elevation → climate → hydrology → civilization
 - `crates/world-tiles` — per-pixel tile rendering, hypsometric tint, PNG encoding, MVT encoding
 - `crates/world-server` — axum HTTP tile server
 - `web/` — MapLibre GL globe viewer

@@ -6,6 +6,7 @@
 //! feeds forward as a hard constraint on fine synthesis. Later stages
 //! (civilization, lore) slot in as further functions of (seed, position).
 
+pub mod civilization;
 pub mod hydrology;
 
 use std::sync::OnceLock;
@@ -14,11 +15,12 @@ use world_core::geo::lat_lon_to_unit;
 use world_core::hash::{hash3, splitmix64};
 use world_core::noise::{fbm, ridged};
 
+pub use civilization::{Civilization, Road, Settlement, SettlementKind};
 pub use hydrology::{Hydrology, RiverEdge};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 7;
+pub const GEN_VERSION: u32 = 8;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -68,6 +70,7 @@ pub struct Planet {
     pub seed: u64,
     plates: Vec<Plate>,
     hydro: OnceLock<Hydrology>,
+    civ: OnceLock<Civilization>,
 }
 
 impl Planet {
@@ -89,6 +92,7 @@ impl Planet {
             seed,
             plates,
             hydro: OnceLock::new(),
+            civ: OnceLock::new(),
         }
     }
 
@@ -97,6 +101,12 @@ impl Planet {
     /// recursion through the carved `elevation`.)
     pub fn hydrology(&self) -> &Hydrology {
         self.hydro.get_or_init(|| Hydrology::build(self))
+    }
+
+    /// Settlements, roads and names, built once per planet on first use
+    /// (pulls in hydrology if it hasn't been solved yet).
+    pub fn civilization(&self) -> &Civilization {
+        self.civ.get_or_init(|| Civilization::build(self))
     }
 
     /// Tectonics at a lat/lon (radians), including the boundary-wander warp.
@@ -564,6 +574,64 @@ mod tests {
             let carved = planet.elevation(lat, lon0, 8);
             assert!(carved.is_finite());
             assert!(carved <= raw + 1e-12, "carving raised terrain");
+        }
+    }
+
+    #[test]
+    fn civilization_is_plausible() {
+        let planet = planet();
+        let h = planet.hydrology();
+        let civ = planet.civilization();
+
+        let cities = civ
+            .settlements
+            .iter()
+            .filter(|s| s.kind == SettlementKind::City)
+            .count();
+        let ports = civ.settlements.iter().filter(|s| s.port).count();
+        assert!((8..=40).contains(&cities), "{cities} cities");
+        assert!(
+            civ.settlements.len() > cities * 5,
+            "only {} settlements",
+            civ.settlements.len()
+        );
+        assert!(ports > 0, "a seafaring-ready planet has harbors somewhere");
+        assert!(!civ.roads.is_empty(), "no roads at all");
+
+        let mut names = std::collections::HashSet::new();
+        for s in &civ.settlements {
+            let c = s.cell as usize;
+            assert!(
+                !h.ocean_mask()[c],
+                "settlement {} placed in the ocean",
+                s.name
+            );
+            assert!(!s.name.is_empty() && names.insert(s.name.clone()), "dup/empty name");
+            assert!(!s.realm.is_empty());
+        }
+
+        // Roads start and end exactly at settlement positions.
+        let positions: Vec<[f64; 3]> = civ.settlements.iter().map(|s| s.pos).collect();
+        for r in &civ.roads {
+            assert!(r.pts.len() >= 2);
+            for end in [r.pts[0], *r.pts.last().unwrap()] {
+                assert!(
+                    positions.iter().any(|p| *p == end),
+                    "road endpoint is not a settlement"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn civilization_is_deterministic() {
+        let a = Planet::new(42);
+        let b = Planet::new(42);
+        let (ca, cb) = (a.civilization(), b.civilization());
+        assert_eq!(ca.settlements.len(), cb.settlements.len());
+        assert_eq!(ca.roads.len(), cb.roads.len());
+        for (x, y) in ca.settlements.iter().zip(&cb.settlements) {
+            assert_eq!((x.cell, &x.name, &x.realm), (y.cell, &y.name, &y.realm));
         }
     }
 

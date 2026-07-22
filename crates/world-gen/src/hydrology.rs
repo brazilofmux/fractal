@@ -50,13 +50,24 @@ pub struct RiverEdge {
 
 pub struct Hydrology {
     seed: u64,
-    grid: CubeGrid,
+    pub(crate) grid: CubeGrid,
     /// Water-routing surface per cell: ≥ max(elevation, sea level), monotone
     /// non-increasing downstream. 0 on the ocean. Where fill > elevation,
     /// the cell is under a lake whose surface is the fill value.
     fill: Vec<f64>,
     down: Vec<u32>,
-    ocean: Vec<bool>,
+    pub(crate) ocean: Vec<bool>,
+    // Per-cell samples and the flow solution, retained because the
+    // civilization stage scores cells on exactly these fields — no point
+    // sampling the planet twice.
+    pub(crate) elev: Vec<f64>,
+    pub(crate) precip: Vec<f64>,
+    pub(crate) t_sea: Vec<f64>,
+    pub(crate) acc: Vec<f64>,
+    pub(crate) threshold: f64,
+    /// Symmetrized 8-neighborhood as CSR (offsets into `adj_dat`).
+    adj_off: Vec<u32>,
+    adj_dat: Vec<u32>,
     rivers: Vec<RiverEdge>,
     /// CARVE_PTS-point polyline per river edge, flattened.
     carve_pts: Vec<[f64; 3]>,
@@ -92,12 +103,13 @@ impl Hydrology {
             adj[a].push(b);
         }
 
-        // Sample the planet at cell centers: macro elevation + precipitation.
-        let samples: Vec<(f64, f64)> = (0..n as u32)
+        // Sample the planet at cell centers: macro elevation and climate.
+        let samples: Vec<(f64, f64, f64)> = (0..n as u32)
             .into_par_iter()
             .map(|c| {
                 let (lat, lon) = unit_to_lat_lon(grid.cell_center(c));
-                (planet.bulk_elevation(lat, lon), planet.climate(lat, lon).precip)
+                let cl = planet.climate(lat, lon);
+                (planet.bulk_elevation(lat, lon), cl.precip, cl.sea_level_temp_c)
             })
             .collect();
         let elev: Vec<f64> = samples.iter().map(|s| s.0).collect();
@@ -222,18 +234,54 @@ impl Hydrology {
             })
             .collect();
 
+        // Flatten adjacency into CSR for cheap reuse by later stages.
+        let mut adj_off = Vec::with_capacity(n + 1);
+        let mut adj_dat = Vec::new();
+        adj_off.push(0u32);
+        for l in &adj {
+            adj_dat.extend_from_slice(l);
+            adj_off.push(adj_dat.len() as u32);
+        }
+
         Self {
             seed: planet.seed,
             grid,
             fill,
             down,
             ocean,
+            elev,
+            precip: samples.iter().map(|s| s.1).collect(),
+            t_sea: samples.iter().map(|s| s.2).collect(),
+            acc,
+            threshold,
+            adj_off,
+            adj_dat,
             rivers,
             carve_pts,
             bucket,
             lake_near,
             lake_cells,
         }
+    }
+
+    /// Symmetrized geometric 8-neighborhood of a cell.
+    pub(crate) fn adj(&self, c: usize) -> &[u32] {
+        &self.adj_dat[self.adj_off[c] as usize..self.adj_off[c + 1] as usize]
+    }
+
+    pub(crate) fn is_lake(&self, c: usize) -> bool {
+        !self.ocean[c] && self.fill[c] > self.elev[c].max(0.0) + 1e-4
+    }
+
+    pub(crate) fn is_river(&self, c: usize) -> bool {
+        !self.ocean[c] && self.acc[c] >= self.threshold
+    }
+
+    /// The jittered node position of a cell — the exact point the river
+    /// network renders through, so anything placed "on the river" lands on
+    /// the drawn line.
+    pub fn node_position(&self, c: u32) -> [f64; 3] {
+        node_pos(self.seed, &self.grid, c)
     }
 
     pub fn rivers(&self) -> &[RiverEdge] {

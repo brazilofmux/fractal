@@ -45,6 +45,17 @@ async fn main() {
         t0.elapsed()
     );
 
+    let t0 = std::time::Instant::now();
+    let civ = app.planet.civilization();
+    let ports = civ.settlements.iter().filter(|s| s.port).count();
+    let cities = civ.settlements.iter().filter(|s| s.capital).count();
+    println!(
+        "civilization: {} settlements ({cities} cities, {ports} ports) · {} roads · settled in {:.1?}",
+        civ.settlements.len(),
+        civ.roads.len(),
+        t0.elapsed()
+    );
+
     let router = Router::new()
         .route("/tiles/{layer}/{z}/{x}/{y}", get(tile))
         .fallback_service(ServeDir::new("web"))
@@ -72,7 +83,8 @@ async fn tile(
     };
     if !matches!(
         layer.as_str(),
-        "elevation" | "plates" | "temperature" | "precipitation" | "rivers"
+        "elevation" | "plates" | "temperature" | "precipitation" | "rivers" | "settlements"
+            | "roads"
     )
         || z > MAX_ZOOM
         || x >= (1u32 << z.min(31))
@@ -80,7 +92,7 @@ async fn tile(
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let (ext, mime) = if layer == "rivers" {
+    let (ext, mime) = if matches!(layer.as_str(), "rivers" | "settlements" | "roads") {
         ("mvt", "application/x-protobuf")
     } else {
         ("png", "image/png")
@@ -102,6 +114,8 @@ async fn tile(
         "temperature" => world_tiles::render_temperature_tile(&render_app.planet, z, x, y),
         "precipitation" => world_tiles::render_precipitation_tile(&render_app.planet, z, x, y),
         "rivers" => world_tiles::render_rivers_tile(&render_app.planet, z, x, y),
+        "settlements" => world_tiles::render_settlements_tile(&render_app.planet, z, x, y),
+        "roads" => world_tiles::render_roads_tile(&render_app.planet, z, x, y),
         _ => world_tiles::render_elevation_tile(&render_app.planet, z, x, y),
     })
     .await

@@ -3,7 +3,7 @@
 
 fn main() {
     let planet = world_gen::Planet::new(42);
-    let h = planet.hydrology();
+    planet.hydrology();
     let args: Vec<f64> = std::env::args()
         .skip(1)
         .map(|a| a.parse().expect("lat/lon degrees"))

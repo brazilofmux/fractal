@@ -32,6 +32,7 @@
       style: {
         version: 8,
         projection: { type: 'globe' },
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
         sources: {
           world: {
             type: 'raster',
@@ -60,9 +61,19 @@
           rivers: {
             type: 'vector',
             // Vector tiles are fetched from a worker, which cannot resolve
-            // relative URLs — this must be absolute, unlike the raster ones.
+            // relative URLs — these must be absolute, unlike the raster ones.
             tiles: [location.origin + '/tiles/rivers/{z}/{x}/{y}.mvt'],
             maxzoom: 16,
+          },
+          roads: {
+            type: 'vector',
+            tiles: [location.origin + '/tiles/roads/{z}/{x}/{y}.mvt'],
+            maxzoom: 14,
+          },
+          settlements: {
+            type: 'vector',
+            tiles: [location.origin + '/tiles/settlements/{z}/{x}/{y}.mvt'],
+            maxzoom: 14,
           },
         },
         layers: [
@@ -81,6 +92,42 @@
                 16, ['*', ['get', 'w'], 3.0]],
             },
           },
+          {
+            id: 'roads', type: 'line', source: 'roads', 'source-layer': 'roads',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+              'line-color': '#a08356',
+              'line-opacity': 0.85,
+              'line-width': ['interpolate', ['linear'], ['zoom'],
+                3, ['-', 2.2, ['*', 0.5, ['get', 'tier']]],
+                8, ['-', 3.4, ['*', 0.7, ['get', 'tier']]],
+                13, ['-', 7.0, ['*', 1.5, ['get', 'tier']]]],
+            },
+          },
+          {
+            id: 'settlement-dots', type: 'circle', source: 'settlements', 'source-layer': 'settlements',
+            paint: {
+              'circle-radius': ['+', 6.5, ['*', -1.5, ['get', 'rank']]],
+              'circle-color': ['case', ['==', ['get', 'port'], 1], '#7fd4d4', '#f0e6d2'],
+              'circle-stroke-color': '#141a26',
+              'circle-stroke-width': 1.2,
+            },
+          },
+          {
+            id: 'settlement-names', type: 'symbol', source: 'settlements', 'source-layer': 'settlements',
+            layout: {
+              'text-field': ['get', 'name'],
+              'text-font': ['Open Sans Semibold'],
+              'text-size': ['+', 16, ['*', -2, ['get', 'rank']]],
+              'text-offset': [0, 0.9],
+              'text-anchor': 'top',
+            },
+            paint: {
+              'text-color': '#ede6d4',
+              'text-halo-color': '#0c1018',
+              'text-halo-width': 1.4,
+            },
+          },
           ...['plates', 'temperature', 'precipitation'].map((id) => ({
             id, type: 'raster', source: id,
             layout: { visibility: 'none' },
@@ -96,6 +143,14 @@
       document.getElementById('pos').textContent =
         `fractal · z${map.getZoom().toFixed(1)} · ${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}`;
     });
+    map.on('click', 'settlement-dots', (e) => {
+      const f = e.features[0].properties;
+      const kind = { 1: 'city', 2: 'town', 3: 'village' }[f.rank] || '?';
+      document.getElementById('pos').textContent =
+        `${f.name} — ${f.port ? 'port ' : ''}${kind}, realm of ${f.realm}`;
+    });
+    map.on('mouseenter', 'settlement-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'settlement-dots', () => { map.getCanvas().style.cursor = ''; });
     document.getElementById('overlay').addEventListener('change', (e) => {
       for (const id of ['plates', 'temperature', 'precipitation']) {
         map.setLayoutProperty(id, 'visibility', id === e.target.value ? 'visible' : 'none');

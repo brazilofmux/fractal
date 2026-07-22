@@ -158,14 +158,63 @@ fn encode_png(pixels: &[u8]) -> Vec<u8> {
     png
 }
 
+/// Web Mercator frame of one tile, for projecting sphere geometry into
+/// vector-tile coordinates and culling against the tile's neighborhood.
+struct TileFrame {
+    lat_s: f64,
+    lat_n: f64,
+    lon_c: f64,
+    lon_span: f64,
+    n_tiles: f64,
+    y: f64,
+}
+
+impl TileFrame {
+    fn new(z: u32, x: u32, y: u32) -> Self {
+        let (lat_n, lon_w) = tile_pixel_to_lat_lon(z, x, y, 0.0, 0.0, TILE_SIZE as f64);
+        let (lat_s, lon_e) =
+            tile_pixel_to_lat_lon(z, x, y, TILE_SIZE as f64, TILE_SIZE as f64, TILE_SIZE as f64);
+        Self {
+            lat_s,
+            lat_n,
+            lon_c: 0.5 * (lon_w + lon_e),
+            lon_span: lon_e - lon_w,
+            n_tiles: (1u64 << z) as f64,
+            y: y as f64,
+        }
+    }
+
+    fn wrap(d: f64) -> f64 {
+        use std::f64::consts::{PI, TAU};
+        (d + PI).rem_euclid(TAU) - PI
+    }
+
+    /// Is the point within `margin` radians of the tile (longitude margin
+    /// widened by latitude)?
+    fn near(&self, p: [f64; 3], margin: f64) -> bool {
+        let (lat, lon) = unit_to_lat_lon(p);
+        let lon_margin = margin / self.lat_n.abs().max(self.lat_s.abs()).cos().max(0.05);
+        lat >= self.lat_s - margin
+            && lat <= self.lat_n + margin
+            && Self::wrap(lon - self.lon_c).abs() <= 0.5 * self.lon_span + lon_margin
+    }
+
+    fn project(&self, p: [f64; 3]) -> (i64, i64) {
+        let (lat, lon) = unit_to_lat_lon(p);
+        let u = (Self::wrap(lon - self.lon_c) / self.lon_span + 0.5) * mvt::EXTENT as f64;
+        let merc = (1.0 - lat.tan().asinh() / std::f64::consts::PI) * 0.5;
+        let v = (merc * self.n_tiles - self.y) * mvt::EXTENT as f64;
+        let clamp = |t: f64| t.round().clamp(-1e7, 1e7) as i64;
+        (clamp(u), clamp(v))
+    }
+}
+
 /// Rivers as a Mapbox Vector Tile: every drainage edge intersecting this
 /// tile (filtered by width class so low zooms only show major rivers),
 /// meandered to a subdivision depth matched to the zoom. The geometry is
 /// prefix-consistent across zooms and tiles by construction, and always
 /// stays inside the valley the same edge carved into the raster.
 pub fn render_rivers_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
-    use std::f64::consts::{PI, TAU};
-
     let hy = planet.hydrology();
     let min_class: u8 = match z {
         0..=2 => 5,
@@ -175,52 +224,85 @@ pub fn render_rivers_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
         _ => 1,
     };
     let levels = (z as i32 - 3).clamp(2, 8) as u32;
-
-    let (lat_n, lon_w) = tile_pixel_to_lat_lon(z, x, y, 0.0, 0.0, TILE_SIZE as f64);
-    let (lat_s, lon_e) =
-        tile_pixel_to_lat_lon(z, x, y, TILE_SIZE as f64, TILE_SIZE as f64, TILE_SIZE as f64);
-    let lon_c = 0.5 * (lon_w + lon_e);
-    let lon_span = lon_e - lon_w;
+    let frame = TileFrame::new(z, x, y);
     // Margin: an edge is ~1.5 cells long plus meander, so 2.5 cells of slack
     // guarantees nothing that touches the tile gets culled.
     let margin = hy.max_cell_size() * 2.5;
-    let lon_margin = margin / lat_n.abs().max(lat_s.abs()).cos().max(0.05);
-    let n_tiles = (1u64 << z) as f64;
-    let wrap = |d: f64| (d + PI).rem_euclid(TAU) - PI;
 
-    let mut features = Vec::new();
+    let mut layer = mvt::Layer::new("rivers");
     for (ei, rv) in hy.rivers().iter().enumerate() {
         if rv.w < min_class {
             continue;
         }
         let pts = hy.river_polyline(ei, levels);
-        let near = pts.iter().any(|&p| {
-            let (lat, lon) = unit_to_lat_lon(p);
-            lat >= lat_s - margin
-                && lat <= lat_n + margin
-                && wrap(lon - lon_c).abs() <= 0.5 * lon_span + lon_margin
-        });
-        if !near {
+        if !pts.iter().any(|&p| frame.near(p, margin)) {
             continue;
         }
-        let path = pts
-            .iter()
-            .map(|&p| {
-                let (lat, lon) = unit_to_lat_lon(p);
-                let u = (wrap(lon - lon_c) / lon_span + 0.5) * mvt::EXTENT as f64;
-                let merc = (1.0 - lat.tan().asinh() / PI) * 0.5;
-                let v = (merc * n_tiles - y as f64) * mvt::EXTENT as f64;
-                let clamp = |t: f64| t.round().clamp(-1e7, 1e7) as i64;
-                (clamp(u), clamp(v))
-            })
-            .collect();
-        features.push(mvt::LineFeature {
-            id: ei as u64,
-            class: rv.w,
-            pts: path,
-        });
+        layer.add(
+            ei as u64,
+            mvt::Geom::Line(pts.iter().map(|&p| frame.project(p)).collect()),
+            &[("w", mvt::Value::Int(rv.w as i64))],
+        );
     }
-    mvt::encode_line_layer("rivers", "w", &features)
+    layer.encode()
+}
+
+/// Settlements as a point layer with name/rank/port/capital/realm
+/// attributes. Low zooms carry only cities; towns and villages fade in as
+/// you approach.
+pub fn render_settlements_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
+    let civ = planet.civilization();
+    let max_rank: u8 = match z {
+        0..=4 => 1,
+        5..=6 => 2,
+        _ => 3,
+    };
+    let frame = TileFrame::new(z, x, y);
+    let margin = planet.hydrology().max_cell_size();
+
+    let mut layer = mvt::Layer::new("settlements");
+    for (i, s) in civ.settlements.iter().enumerate() {
+        if s.kind.rank() > max_rank || !frame.near(s.pos, margin) {
+            continue;
+        }
+        layer.add(
+            i as u64,
+            mvt::Geom::Points(vec![frame.project(s.pos)]),
+            &[
+                ("name", mvt::Value::Str(s.name.clone())),
+                ("rank", mvt::Value::Int(s.kind.rank() as i64)),
+                ("port", mvt::Value::Int(s.port as i64)),
+                ("capital", mvt::Value::Int(s.capital as i64)),
+                ("realm", mvt::Value::Str(s.realm.clone())),
+            ],
+        );
+    }
+    layer.encode()
+}
+
+/// Roads as a line layer, tiered like the settlements they connect.
+pub fn render_roads_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
+    let civ = planet.civilization();
+    let max_tier: u8 = match z {
+        0..=3 => 1,
+        4..=5 => 2,
+        _ => 3,
+    };
+    let frame = TileFrame::new(z, x, y);
+    let margin = planet.hydrology().max_cell_size() * 1.5;
+
+    let mut layer = mvt::Layer::new("roads");
+    for (i, r) in civ.roads.iter().enumerate() {
+        if r.tier > max_tier || !r.pts.iter().any(|&p| frame.near(p, margin)) {
+            continue;
+        }
+        layer.add(
+            i as u64,
+            mvt::Geom::Line(r.pts.iter().map(|&p| frame.project(p)).collect()),
+            &[("tier", mvt::Value::Int(r.tier as i64))],
+        );
+    }
+    layer.encode()
 }
 
 /// Debug layer: plate mosaic. Each plate gets a stable pastel; boundaries
@@ -461,6 +543,30 @@ mod tests {
             nonempty >= 4,
             "only {nonempty}/64 z3 tiles contain river features ({bytes} bytes total)"
         );
+    }
+
+    #[test]
+    fn settlement_and_road_tiles_cover_the_civilization() {
+        // Rendering every z3 tile must reproduce every city at least once,
+        // and some tile must carry roads.
+        let planet = planet();
+        let civ = planet.civilization();
+        let cities = civ.settlements.iter().filter(|s| s.capital).count();
+        let mut point_tiles = 0;
+        let mut road_bytes = 0usize;
+        for x in 0..8 {
+            for y in 0..8 {
+                if render_settlements_tile(planet, 3, x, y).len() > 100 {
+                    point_tiles += 1;
+                }
+                road_bytes += render_roads_tile(planet, 3, x, y).len();
+            }
+        }
+        assert!(
+            point_tiles >= (cities / 8).max(2),
+            "cities missing from settlement tiles ({point_tiles} tiles with points)"
+        );
+        assert!(road_bytes > 64 * 50, "road tiles look empty");
     }
 
     #[test]
