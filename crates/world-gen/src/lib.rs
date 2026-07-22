@@ -18,7 +18,7 @@ pub use hydrology::{Hydrology, RiverEdge};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 6;
+pub const GEN_VERSION: u32 = 7;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -40,6 +40,9 @@ const BELT_WIDTH: f64 = 0.11;
 /// Amplitude of the domain warp applied before plate lookup, so boundaries
 /// wander like sutures instead of tracing clean Voronoi arcs.
 const WARP_AMP: f64 = 0.075;
+/// Radians of (d3 − d2) over which convergence blends between the 2nd and
+/// 3rd nearest plates, keeping the uplift field continuous where they swap.
+const CONV_BLEND: f64 = 0.08;
 
 #[derive(Clone, Copy)]
 pub struct Plate {
@@ -102,42 +105,61 @@ impl Planet {
     }
 
     fn tectonics(&self, p: [f64; 3]) -> Tectonics {
-        // Nearest two plate seats; with ~14 plates brute force is cheapest.
+        // Nearest three plate seats; with ~14 plates brute force is cheapest.
         let (mut i1, mut dot1) = (0usize, -2.0f64);
         let (mut i2, mut dot2) = (0usize, -2.0f64);
+        let (mut i3, mut dot3) = (0usize, -2.0f64);
         for (i, pl) in self.plates.iter().enumerate() {
             let d = dot(p, pl.seat);
             if d > dot1 {
+                (i3, dot3) = (i2, dot2);
                 (i2, dot2) = (i1, dot1);
                 (i1, dot1) = (i, d);
             } else if d > dot2 {
+                (i3, dot3) = (i2, dot2);
                 (i2, dot2) = (i, d);
+            } else if d > dot3 {
+                (i3, dot3) = (i, d);
             }
         }
         let d1 = dot1.clamp(-1.0, 1.0).acos();
         let d2 = dot2.clamp(-1.0, 1.0).acos();
+        let d3 = dot3.clamp(-1.0, 1.0).acos();
         let edge = d2 - d1;
         let belt = (-(edge / BELT_WIDTH) * (edge / BELT_WIDTH)).exp();
 
-        // Relative velocity of plate 1 with respect to plate 2, projected on
-        // the tangent direction toward plate 2: positive means collision.
-        let (p1, p2) = (self.plates[i1], self.plates[i2]);
-        let dv = sub(cross(p1.omega, p), cross(p2.omega, p));
-        let mut t = sub(p2.seat, p1.seat);
-        let along = dot(t, p);
-        t = sub(t, [p[0] * along, p[1] * along, p[2] * along]);
-        let len = dot(t, t).sqrt();
-        let convergence = if len > 1e-9 {
-            (dot(dv, t) / (len * 1.6)).clamp(-1.0, 1.0)
-        } else {
-            0.0
-        };
+        // Convergence toward the nearest boundary — but where the 2nd and
+        // 3rd plates are nearly equidistant, blend their contributions.
+        // Using only the 2nd would step discontinuously along the internal
+        // bisector where they swap rank, drawing thousand-km cliff lines
+        // through plate interiors (found as a dead-straight trench crossing
+        // an ocean; it had been hiding in the terrain since Phase 2).
+        let u = ((d3 - d2) / CONV_BLEND).clamp(0.0, 1.0);
+        let w = 0.5 + 0.5 * smoothstep(0.0, 1.0, u);
+        let convergence =
+            w * self.rel_convergence(p, i1, i2) + (1.0 - w) * self.rel_convergence(p, i1, i3);
 
         Tectonics {
             plate: i1,
             edge,
             convergence,
             belt,
+        }
+    }
+
+    /// Relative velocity of plate `a` with respect to plate `b`, projected
+    /// on the tangent direction toward `b`'s seat: positive means collision.
+    fn rel_convergence(&self, p: [f64; 3], a: usize, b: usize) -> f64 {
+        let (pa, pb) = (self.plates[a], self.plates[b]);
+        let dv = sub(cross(pa.omega, p), cross(pb.omega, p));
+        let mut t = sub(pb.seat, pa.seat);
+        let along = dot(t, p);
+        t = sub(t, [p[0] * along, p[1] * along, p[2] * along]);
+        let len = dot(t, t).sqrt();
+        if len > 1e-9 {
+            (dot(dv, t) / (len * 1.6)).clamp(-1.0, 1.0)
+        } else {
+            0.0
         }
     }
 
