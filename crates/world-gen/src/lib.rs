@@ -7,6 +7,10 @@ use world_core::geo::lat_lon_to_unit;
 use world_core::hash::splitmix64;
 use world_core::noise::{fbm, ridged};
 
+/// Bump whenever generated output changes — cached tiles are keyed on this,
+/// so stale caches invalidate themselves.
+pub const GEN_VERSION: u32 = 3;
+
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
 const STAGE_UPLIFT: u64 = 0x0F_11F7;
