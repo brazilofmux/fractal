@@ -34,7 +34,7 @@ async fn main() {
     });
 
     let router = Router::new()
-        .route("/tiles/elevation/{z}/{x}/{y}", get(elevation_tile))
+        .route("/tiles/{layer}/{z}/{x}/{y}", get(tile))
         .fallback_service(ServeDir::new("web"))
         .with_state(app.clone());
 
@@ -47,21 +47,25 @@ async fn main() {
     axum::serve(listener, router).await.expect("serve");
 }
 
-async fn elevation_tile(
+async fn tile(
     State(app): State<Arc<App>>,
-    Path((z, x, y)): Path<(u32, u32, String)>,
+    Path((layer, z, x, y)): Path<(String, u32, u32, String)>,
 ) -> Response {
     let Ok(y) = y.trim_end_matches(".png").parse::<u32>() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    if z > MAX_ZOOM || x >= (1u32 << z.min(31)) || y >= (1u32 << z.min(31)) {
+    if !matches!(layer.as_str(), "elevation" | "plates")
+        || z > MAX_ZOOM
+        || x >= (1u32 << z.min(31))
+        || y >= (1u32 << z.min(31))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
 
     // Cache is an optimization, never a source of truth: keyed on generator
     // version and seed, so nothing stale can survive a generator change.
     let path = app.cache_dir.join(format!(
-        "v{GEN_VERSION}/{}/elevation/{z}/{x}/{y}.png",
+        "v{GEN_VERSION}/{}/{layer}/{z}/{x}/{y}.png",
         app.planet.seed
     ));
     if let Ok(bytes) = tokio::fs::read(&path).await {
@@ -69,8 +73,9 @@ async fn elevation_tile(
     }
 
     let render_app = app.clone();
-    let png = tokio::task::spawn_blocking(move || {
-        world_tiles::render_elevation_tile(&render_app.planet, z, x, y)
+    let png = tokio::task::spawn_blocking(move || match layer.as_str() {
+        "plates" => world_tiles::render_plates_tile(&render_app.planet, z, x, y),
+        _ => world_tiles::render_elevation_tile(&render_app.planet, z, x, y),
     })
     .await
     .expect("render task");

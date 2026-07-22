@@ -11,14 +11,19 @@ hand-authoring wall.
 
 See [PLAN.md](PLAN.md) for the full design and phase roadmap.
 
-## Status: Phase 1
+## Status: Phase 2
 
-Seeded planet — continents, oceans, mountain potential — served as standard
-Web Mercator XYZ raster tiles and rendered in the browser on a MapLibre globe.
-Tiles are hillshaded (seam-free by construction: border samples are
-bit-identical across neighboring tiles, enforced by tests) and cached on disk
-under `cache/`, keyed by generator version and seed so stale tiles
-self-invalidate.
+Seeded planet served as standard Web Mercator XYZ raster tiles and rendered in
+the browser on a MapLibre globe. Tiles are hillshaded (seam-free by
+construction: border samples are bit-identical across neighboring tiles,
+enforced by tests) and cached on disk under `cache/`, keyed by generator
+version and seed so stale tiles self-invalidate.
+
+Elevation is shaped by tectonics: spherical-Voronoi plates with Euler-pole
+motion, boundaries classified by relative velocity, and uplift belts where
+plates collide — mountain ranges exist for reasons, island arcs included.
+Toggle the `plates` debug overlay in the viewer to see the mosaic (red seams
+converge, blue seams rift) and check that ranges sit on collisions.
 
 ## Run it
 

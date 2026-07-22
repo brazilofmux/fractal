@@ -16,7 +16,12 @@
 </head>
 <body>
   <div id="map"></div>
-  <div id="hud">fractal · phase 0</div>
+  <div id="hud">
+    <span id="pos">fractal</span>
+    <label style="margin-left:10px;cursor:pointer">
+      <input type="checkbox" id="plates-toggle"> plates
+    </label>
+  </div>
   <script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
   <script>
     const map = new maplibregl.Map({
@@ -31,10 +36,21 @@
             tileSize: 256,
             maxzoom: 22,
           },
+          plates: {
+            type: 'raster',
+            tiles: ['/tiles/plates/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            maxzoom: 22,
+          },
         },
         layers: [
           { id: 'space', type: 'background', paint: { 'background-color': '#01010a' } },
           { id: 'world', type: 'raster', source: 'world' },
+          {
+            id: 'plates', type: 'raster', source: 'plates',
+            layout: { visibility: 'none' },
+            paint: { 'raster-opacity': 0.55 },
+          },
         ],
       },
       center: [0, 15],
@@ -42,8 +58,11 @@
     });
     map.addControl(new maplibregl.NavigationControl());
     map.on('mousemove', (e) => {
-      document.getElementById('hud').textContent =
+      document.getElementById('pos').textContent =
         `fractal · z${map.getZoom().toFixed(1)} · ${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}`;
+    });
+    document.getElementById('plates-toggle').addEventListener('change', (e) => {
+      map.setLayoutProperty('plates', 'visibility', e.target.checked ? 'visible' : 'none');
     });
   </script>
 </body>

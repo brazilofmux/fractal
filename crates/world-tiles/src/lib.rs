@@ -69,16 +69,68 @@ pub fn render_elevation_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8>
             }
         });
 
+    encode_png(&pixels)
+}
+
+fn encode_png(pixels: &[u8]) -> Vec<u8> {
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(
-            &pixels,
+            pixels,
             TILE_SIZE as u32,
             TILE_SIZE as u32,
             image::ExtendedColorType::Rgb8,
         )
         .expect("png encode");
     png
+}
+
+/// Debug layer: plate mosaic. Each plate gets a stable pastel; boundaries
+/// darken, tinted red where convergent and blue where divergent — a direct
+/// visual check that mountain belts sit on collisions.
+pub fn render_plates_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
+    let mut pixels = vec![0u8; TILE_SIZE * TILE_SIZE * 3];
+    pixels
+        .par_chunks_mut(TILE_SIZE * 3)
+        .enumerate()
+        .for_each(|(row, buf)| {
+            for col in 0..TILE_SIZE {
+                let (lat, lon) = tile_pixel_to_lat_lon(
+                    z,
+                    x,
+                    y,
+                    col as f64 + 0.5,
+                    row as f64 + 0.5,
+                    TILE_SIZE as f64,
+                );
+                let t = planet.tectonics_at(lat, lon);
+                let h = world_core::hash::hash3(0x71A7, t.plate as i64, 0, 0);
+                let mut c = [
+                    120.0 + (h & 0x7F) as f64,
+                    120.0 + ((h >> 8) & 0x7F) as f64,
+                    120.0 + ((h >> 16) & 0x7F) as f64,
+                ];
+                // Boundary tint: red = collision, blue = rift.
+                let s = t.belt * t.convergence.abs();
+                if t.convergence >= 0.0 {
+                    c[0] += 90.0 * s;
+                    c[1] -= 60.0 * s;
+                    c[2] -= 60.0 * s;
+                } else {
+                    c[0] -= 60.0 * s;
+                    c[1] -= 40.0 * s;
+                    c[2] += 90.0 * s;
+                }
+                // Darken the seam itself.
+                let dim = 1.0 - 0.45 * t.belt * t.belt;
+                let out = &mut buf[col * 3..col * 3 + 3];
+                for ch in 0..3 {
+                    out[ch] = (c[ch] * dim).clamp(0.0, 255.0) as u8;
+                }
+            }
+        });
+
+    encode_png(&pixels)
 }
 
 /// Unit vector toward the light. Azimuth in degrees clockwise from north,
