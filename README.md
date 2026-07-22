@@ -11,7 +11,7 @@ hand-authoring wall.
 
 See [PLAN.md](PLAN.md) for the full design and phase roadmap.
 
-## Status: Phase 3
+## Status: Phase 4
 
 Seeded planet served as standard Web Mercator XYZ raster tiles and rendered in
 the browser on a MapLibre globe. Tiles are hillshaded (seam-free by
@@ -34,6 +34,18 @@ classification maps (temperature, precipitation) to biomes; snow and sea ice
 appear where it is cold, not where it is high. `temperature` and
 `precipitation` debug overlays in the viewer.
 
+Water drains: a global drainage graph on a cube-sphere grid (6×256²
+cells, ~40 km) is priority-flooded outward from the ocean, so every land
+cell has a monotone downhill path to the sea — depressions become lakes
+with a spill, and a test walks every cell's drainage chain to the coast.
+Flow accumulation is weighted by the climate's actual precipitation;
+cells above a discharge quantile become rivers, served as Mapbox Vector
+Tiles (`/tiles/rivers/{z}/{x}/{y}.mvt`, hand-rolled encoder) with
+deterministic meanders that refine with zoom. Rivers feed back into the
+terrain: valleys are carved toward the water surface during elevation
+synthesis (coarse constrains fine), channels flood to the river's level,
+and lakes fill to theirs.
+
 ## Run it
 
 ```sh
@@ -49,8 +61,8 @@ XYZ tile layer.
 
 ## Layout
 
-- `crates/world-core` — positional hashing, gradient noise, sphere/Mercator geometry
-- `crates/world-gen` — the generation pipeline (Phase 0: elevation)
-- `crates/world-tiles` — per-pixel tile rendering, hypsometric tint, PNG encoding
+- `crates/world-core` — positional hashing, gradient noise, sphere/Mercator geometry, cube-sphere grid
+- `crates/world-gen` — the generation pipeline: tectonics → elevation → climate → hydrology
+- `crates/world-tiles` — per-pixel tile rendering, hypsometric tint, PNG encoding, MVT encoding
 - `crates/world-server` — axum HTTP tile server
 - `web/` — MapLibre GL globe viewer

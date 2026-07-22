@@ -12,6 +12,12 @@ pub fn lat_lon_to_unit(lat: f64, lon: f64) -> [f64; 3] {
     [cl * lon.cos(), cl * lon.sin(), lat.sin()]
 }
 
+/// Point on the unit sphere → (lat, lon) in radians.
+#[inline]
+pub fn unit_to_lat_lon(p: [f64; 3]) -> (f64, f64) {
+    (p[2].clamp(-1.0, 1.0).asin(), p[1].atan2(p[0]))
+}
+
 /// Pixel (px, py) of Web Mercator tile (z, x, y) → (lat, lon) radians.
 ///
 /// Computed in *global* pixel space: `x * tile_size + px` is exact in f64 for

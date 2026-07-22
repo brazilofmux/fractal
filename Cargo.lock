@@ -749,6 +749,7 @@ version = "0.1.0"
 name = "world-gen"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "world-core",
 ]
 

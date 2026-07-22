@@ -12,3 +12,8 @@ edition = "2021"
 
 [profile.release]
 opt-level = 3
+
+# Tests build the global drainage graph (~400k planet samples); at opt-level
+# 0 that dominates every `cargo test` run.
+[profile.dev]
+opt-level = 1

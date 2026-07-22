@@ -1,17 +1,24 @@
-//! The generation pipeline. Phase 2: elevation is shaped by tectonics —
-//! spherical-Voronoi plates with Euler-pole motion, boundaries classified by
-//! relative velocity, and mountain belts that exist where plates collide
-//! rather than wherever ridged noise felt like putting them. Later stages
-//! (climate, hydrology, biomes, civilization) slot in as further functions of
-//! (seed, position).
+//! The generation pipeline. Through Phase 4: elevation is shaped by
+//! tectonics (spherical-Voronoi plates, mountain belts where plates
+//! collide), climate follows insolation, winds and rain shadows, and
+//! hydrology solves a global drainage graph whose rivers carve their
+//! valleys back into the terrain — the first stage where coarse output
+//! feeds forward as a hard constraint on fine synthesis. Later stages
+//! (civilization, lore) slot in as further functions of (seed, position).
+
+pub mod hydrology;
+
+use std::sync::OnceLock;
 
 use world_core::geo::lat_lon_to_unit;
 use world_core::hash::{hash3, splitmix64};
 use world_core::noise::{fbm, ridged};
 
+pub use hydrology::{Hydrology, RiverEdge};
+
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 5;
+pub const GEN_VERSION: u32 = 6;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -57,6 +64,7 @@ pub struct Tectonics {
 pub struct Planet {
     pub seed: u64,
     plates: Vec<Plate>,
+    hydro: OnceLock<Hydrology>,
 }
 
 impl Planet {
@@ -74,7 +82,18 @@ impl Planet {
                 }
             })
             .collect();
-        Self { seed, plates }
+        Self {
+            seed,
+            plates,
+            hydro: OnceLock::new(),
+        }
+    }
+
+    /// The global drainage solution, built once per planet on first use.
+    /// (The build samples raw elevation and climate only, so there is no
+    /// recursion through the carved `elevation`.)
+    pub fn hydrology(&self) -> &Hydrology {
+        self.hydro.get_or_init(|| Hydrology::build(self))
     }
 
     /// Tectonics at a lat/lon (radians), including the boundary-wander warp.
@@ -137,7 +156,17 @@ impl Planet {
     /// Normalized elevation at a point: negative is below sea level, positive
     /// above, roughly [-1, 1]. `detail_octaves` scales synthesis depth to the
     /// zoom level being rendered so detail keeps arriving as you descend.
+    /// This is the carved elevation — near a river the raw synthesis is
+    /// pulled down toward the river's water surface, so valleys exist at
+    /// every zoom exactly where the drainage graph says they do.
     pub fn elevation(&self, lat: f64, lon: f64, detail_octaves: u32) -> f64 {
+        let e = self.elevation_raw(lat, lon, detail_octaves);
+        self.hydrology().carve(lat_lon_to_unit(lat, lon), e)
+    }
+
+    /// Elevation as synthesized, before hydrological carving. Everything the
+    /// drainage solver itself consumes must come from here.
+    pub fn elevation_raw(&self, lat: f64, lon: f64, detail_octaves: u32) -> f64 {
         let p = lat_lon_to_unit(lat, lon);
         let tect = self.tectonics(self.warp(p));
 
@@ -246,9 +275,16 @@ pub fn classify_biome(temp_c: f64, precip: f64) -> Biome {
 
 impl Planet {
     /// Macro-scale elevation: enough octaves for climate and hydrology to see
-    /// mountains, cheap enough to sample repeatedly (e.g. upwind).
+    /// mountains, cheap enough to sample repeatedly (e.g. upwind). Raw — the
+    /// drainage solver feeds on this, so it must not depend on the solution.
     pub fn bulk_elevation(&self, lat: f64, lon: f64) -> f64 {
-        self.elevation(lat, lon, 4)
+        self.elevation_raw(lat, lon, 4)
+    }
+
+    /// Water surface at/near this point — lake fill level or a passing
+    /// river's surface — if terrain below it should flood.
+    pub fn water_level(&self, lat: f64, lon: f64) -> Option<f64> {
+        self.hydrology().water_level(lat_lon_to_unit(lat, lon))
     }
 
     /// Sea-level temperature: insolation bands plus a low-frequency wobble so
@@ -377,9 +413,15 @@ fn unit_from_hashes(h1: u64, h2: u64) -> [f64; 3] {
 mod tests {
     use super::*;
 
+    /// One planet per test binary — hydrology builds once, tests share it.
+    fn planet() -> &'static Planet {
+        static P: OnceLock<Planet> = OnceLock::new();
+        P.get_or_init(|| Planet::new(42))
+    }
+
     #[test]
     fn planet_has_land_and_ocean() {
-        let planet = Planet::new(42);
+        let planet = planet();
         let (mut land, mut ocean) = (0, 0);
         for i in 0..40 {
             for j in 0..80 {
@@ -403,7 +445,7 @@ mod tests {
 
     #[test]
     fn climate_is_sane() {
-        let planet = Planet::new(42);
+        let planet = planet();
         let mut eq_temps = 0.0;
         let mut polar_temps = 0.0;
         for j in 0..40 {
@@ -428,8 +470,84 @@ mod tests {
     }
 
     #[test]
+    fn every_river_reaches_the_sea() {
+        // The Phase 4 milestone, taken literally: from every land cell —
+        // not just river cells — following downstream pointers must reach
+        // the ocean, without cycles, along a never-ascending water surface.
+        let h = planet().hydrology();
+        let (down, fill, ocean) = (h.downstream(), h.fill_levels(), h.ocean_mask());
+        let n = down.len();
+        let mut state = vec![0u8; n]; // 0 unknown · 1 reaches sea · 2 on path
+        let mut path = Vec::new();
+        for start in 0..n {
+            if ocean[start] || state[start] == 1 {
+                continue;
+            }
+            let mut c = start;
+            path.clear();
+            loop {
+                if ocean[c] || state[c] == 1 {
+                    break;
+                }
+                assert_ne!(state[c], 2, "drainage cycle through cell {c}");
+                state[c] = 2;
+                path.push(c);
+                let d = down[c];
+                assert_ne!(d, u32::MAX, "land cell {c} drains nowhere");
+                let d = d as usize;
+                assert!(
+                    fill[d] <= fill[c] + 1e-9,
+                    "water flows uphill: {} -> {}",
+                    fill[c],
+                    fill[d]
+                );
+                c = d;
+            }
+            for &p in &path {
+                state[p] = 1;
+            }
+        }
+    }
+
+    #[test]
+    fn rivers_and_lakes_exist_in_sane_numbers() {
+        let h = planet().hydrology();
+        let rivers = h.rivers().len();
+        let land = h.ocean_mask().iter().filter(|&&o| !o).count();
+        assert!(
+            rivers > 300 && rivers < land / 10,
+            "{rivers} river edges on {land} land cells"
+        );
+        assert!(h.lake_cell_count() > 10, "a noise planet should pond somewhere");
+        assert!(h.rivers().iter().all(|rv| (1..=6).contains(&rv.w)));
+        // Subdivision refines: level k has 2^k + 1 points, prefix-consistent.
+        let coarse = h.river_polyline(0, 2);
+        let fine = h.river_polyline(0, 4);
+        assert_eq!((coarse.len(), fine.len()), (5, 17));
+        assert_eq!(coarse[2], fine[8], "deeper meander moved an existing point");
+    }
+
+    #[test]
+    fn carving_never_raises_and_stays_finite() {
+        let planet = planet();
+        let h = planet.hydrology();
+        // Walk straight across the first decently wide river's midpoint.
+        let rv = h.rivers().iter().position(|r| r.w >= 3).expect("a wide river");
+        let pts = h.river_polyline(rv, 2);
+        let mid = pts[pts.len() / 2];
+        let (lat0, lon0) = world_core::geo::unit_to_lat_lon(mid);
+        for i in -40i32..=40 {
+            let lat = lat0 + i as f64 * 2e-4;
+            let raw = planet.elevation_raw(lat, lon0, 8);
+            let carved = planet.elevation(lat, lon0, 8);
+            assert!(carved.is_finite());
+            assert!(carved <= raw + 1e-12, "carving raised terrain");
+        }
+    }
+
+    #[test]
     fn tectonics_is_sane() {
-        let planet = Planet::new(42);
+        let planet = planet();
         for i in 0..500 {
             let lat = (i as f64 / 500.0 - 0.5) * 3.0;
             let lon = (i as f64 * 0.618).rem_euclid(1.0) * std::f64::consts::TAU

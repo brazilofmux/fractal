@@ -1,10 +1,14 @@
 //! Raster tile rendering: sample the planet into an elevation grid (with a
 //! one-pixel border so gradients never need a neighboring tile), hillshade,
-//! hypsometric-tint, encode PNG. Rows render in parallel.
+//! hypsometric-tint, encode PNG. Rows render in parallel. Rivers ship
+//! separately as Mapbox Vector Tiles, drawn from the same drainage graph
+//! that carved their valleys into the raster.
+
+pub mod mvt;
 
 use image::ImageEncoder;
 use rayon::prelude::*;
-use world_core::geo::tile_pixel_to_lat_lon;
+use world_core::geo::{tile_pixel_to_lat_lon, unit_to_lat_lon};
 use world_gen::{classify_biome, Biome, Planet, LAPSE_C};
 
 pub const TILE_SIZE: usize = 256;
@@ -112,15 +116,25 @@ pub fn render_elevation_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8>
                 let inv_len = 1.0 / (dzdx * dzdx + dzdy * dzdy + 1.0).sqrt();
                 let diffuse = ((-dzdx * light[0] - dzdy * light[1] + light[2]) * inv_len).max(0.0);
 
-                // Full relief on land, muted on the seafloor.
-                let intensity = if e <= 0.0 {
+                // Water surface here, if any: the ocean at 0, or a lake at
+                // its fill level when the terrain dips below it.
+                let (px, py) = (col as f64 + 0.5, row as f64 + 0.5);
+                let water = if e <= 0.0 {
+                    Some(0.0)
+                } else {
+                    let (lat, lon) = tile_pixel_to_lat_lon(z, x, y, px, py, TILE_SIZE as f64);
+                    planet.water_level(lat, lon).filter(|&w| e < w - 5e-4)
+                };
+
+                // Full relief on land, muted under water.
+                let intensity = if water.is_some() {
                     0.75 + 0.25 * diffuse
                 } else {
                     0.40 + 0.60 * diffuse
                 };
 
-                let (t_sea, precip) = climate.sample(col as f64 + 0.5, row as f64 + 0.5);
-                let tint = surface_color(e, t_sea, precip);
+                let (t_sea, precip) = climate.sample(px, py);
+                let tint = surface_color(e, water, t_sea, precip);
                 let out = &mut buf[col * 3..col * 3 + 3];
                 for ch in 0..3 {
                     out[ch] = (tint[ch] as f64 * intensity).round().min(255.0) as u8;
@@ -142,6 +156,71 @@ fn encode_png(pixels: &[u8]) -> Vec<u8> {
         )
         .expect("png encode");
     png
+}
+
+/// Rivers as a Mapbox Vector Tile: every drainage edge intersecting this
+/// tile (filtered by width class so low zooms only show major rivers),
+/// meandered to a subdivision depth matched to the zoom. The geometry is
+/// prefix-consistent across zooms and tiles by construction, and always
+/// stays inside the valley the same edge carved into the raster.
+pub fn render_rivers_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
+    use std::f64::consts::{PI, TAU};
+
+    let hy = planet.hydrology();
+    let min_class: u8 = match z {
+        0..=2 => 5,
+        3..=4 => 4,
+        5..=6 => 3,
+        7..=8 => 2,
+        _ => 1,
+    };
+    let levels = (z as i32 - 3).clamp(2, 8) as u32;
+
+    let (lat_n, lon_w) = tile_pixel_to_lat_lon(z, x, y, 0.0, 0.0, TILE_SIZE as f64);
+    let (lat_s, lon_e) =
+        tile_pixel_to_lat_lon(z, x, y, TILE_SIZE as f64, TILE_SIZE as f64, TILE_SIZE as f64);
+    let lon_c = 0.5 * (lon_w + lon_e);
+    let lon_span = lon_e - lon_w;
+    // Margin: an edge is ~1.5 cells long plus meander, so 2.5 cells of slack
+    // guarantees nothing that touches the tile gets culled.
+    let margin = hy.max_cell_size() * 2.5;
+    let lon_margin = margin / lat_n.abs().max(lat_s.abs()).cos().max(0.05);
+    let n_tiles = (1u64 << z) as f64;
+    let wrap = |d: f64| (d + PI).rem_euclid(TAU) - PI;
+
+    let mut features = Vec::new();
+    for (ei, rv) in hy.rivers().iter().enumerate() {
+        if rv.w < min_class {
+            continue;
+        }
+        let pts = hy.river_polyline(ei, levels);
+        let near = pts.iter().any(|&p| {
+            let (lat, lon) = unit_to_lat_lon(p);
+            lat >= lat_s - margin
+                && lat <= lat_n + margin
+                && wrap(lon - lon_c).abs() <= 0.5 * lon_span + lon_margin
+        });
+        if !near {
+            continue;
+        }
+        let path = pts
+            .iter()
+            .map(|&p| {
+                let (lat, lon) = unit_to_lat_lon(p);
+                let u = (wrap(lon - lon_c) / lon_span + 0.5) * mvt::EXTENT as f64;
+                let merc = (1.0 - lat.tan().asinh() / PI) * 0.5;
+                let v = (merc * n_tiles - y as f64) * mvt::EXTENT as f64;
+                let clamp = |t: f64| t.round().clamp(-1e7, 1e7) as i64;
+                (clamp(u), clamp(v))
+            })
+            .collect();
+        features.push(mvt::LineFeature {
+            id: ei as u64,
+            class: rv.w,
+            pts: path,
+        });
+    }
+    mvt::encode_line_layer("rivers", "w", &features)
 }
 
 /// Debug layer: plate mosaic. Each plate gets a stable pastel; boundaries
@@ -247,19 +326,20 @@ fn light_vector(azimuth_deg: f64, altitude_deg: f64) -> [f64; 3] {
     [az.sin() * alt.cos(), -az.cos() * alt.cos(), alt.sin()]
 }
 
-/// Ground color: bathymetry below sea level (with sea ice where it's cold
-/// enough), biome color on land (with rock showing through at altitude).
-/// Snow is wherever temperature says, not wherever elevation says.
-fn surface_color(e: f64, t_sea: f64, precip: f64) -> [u8; 3] {
+/// Ground color: bathymetry under water — ocean or lake, colored by depth
+/// below the local water surface, with ice where the surface is cold enough
+/// — and biome color on land (with rock showing through at altitude). Snow
+/// is wherever temperature says, not wherever elevation says.
+fn surface_color(e: f64, water: Option<f64>, t_sea: f64, precip: f64) -> [u8; 3] {
     const OCEAN: [(f64, [u8; 3]); 4] = [
         (-0.90, [6, 16, 42]),
         (-0.45, [12, 38, 82]),
         (-0.12, [24, 68, 122]),
         (0.00, [60, 116, 158]),
     ];
-    if e <= 0.0 {
-        let c = gradient(&OCEAN, e);
-        let ice = ((-6.0 - t_sea) / 10.0).clamp(0.0, 1.0);
+    if let Some(w) = water {
+        let c = gradient(&OCEAN, e - w);
+        let ice = ((-6.0 - (t_sea - LAPSE_C * w.max(0.0))) / 10.0).clamp(0.0, 1.0);
         return mix(c, [222, 232, 240], ice);
     }
     let temp = t_sea - LAPSE_C * e;
@@ -330,10 +410,17 @@ fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
 mod tests {
     use super::*;
 
+    /// One planet per test binary — hydrology builds once, tests share it.
+    fn planet() -> &'static Planet {
+        static P: std::sync::OnceLock<Planet> = std::sync::OnceLock::new();
+        P.get_or_init(|| Planet::new(42))
+    }
+
     #[test]
     fn deep_zoom_elevation_is_continuous() {
         // Anti-FT3: at z22, adjacent pixels differ by a hair, never garbage.
-        let planet = Planet::new(42);
+        // Runs on the carved elevation, so valley walls must be smooth too.
+        let planet = planet();
         let (z, x, y) = (22u32, 2_000_000u32, 1_400_000u32);
         let mut prev: Option<f64> = None;
         for i in 0..256 {
@@ -351,8 +438,34 @@ mod tests {
     }
 
     #[test]
+    fn river_tiles_cover_the_rivers() {
+        // Rendering every z3 tile must reproduce every major river edge at
+        // least once — the vector layer cannot silently drop geometry.
+        let planet = planet();
+        let hy = planet.hydrology();
+        let majors = hy.rivers().iter().filter(|r| r.w >= 4).count();
+        assert!(majors > 0, "no major rivers on seed 42");
+        let mut nonempty = 0;
+        let mut bytes = 0usize;
+        for x in 0..8 {
+            for y in 0..8 {
+                let tile = render_rivers_tile(planet, 3, x, y);
+                bytes += tile.len();
+                // An empty layer is ~40 bytes of scaffolding; features add more.
+                if tile.len() > 80 {
+                    nonempty += 1;
+                }
+            }
+        }
+        assert!(
+            nonempty >= 4,
+            "only {nonempty}/64 z3 tiles contain river features ({bytes} bytes total)"
+        );
+    }
+
+    #[test]
     fn shared_border_elevations_match_exactly() {
-        let planet = Planet::new(42);
+        let planet = planet();
         let (z, x, y) = (12u32, 1000u32, 1500u32);
         for i in 0..TILE_SIZE {
             let py = i as f64 + 0.5;

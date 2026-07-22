@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 world-core = { path = "../world-core" }
+rayon = "1"

@@ -57,10 +57,28 @@
             tileSize: 256,
             maxzoom: 22,
           },
+          rivers: {
+            type: 'vector',
+            tiles: ['/tiles/rivers/{z}/{x}/{y}.mvt'],
+            maxzoom: 16,
+          },
         },
         layers: [
           { id: 'space', type: 'background', paint: { 'background-color': '#01010a' } },
           { id: 'world', type: 'raster', source: 'world' },
+          {
+            id: 'rivers', type: 'line', source: 'rivers', 'source-layer': 'rivers',
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint: {
+              'line-color': '#4a8ac2',
+              'line-opacity': 0.9,
+              'line-width': ['interpolate', ['linear'], ['zoom'],
+                2, ['*', ['get', 'w'], 0.22],
+                7, ['*', ['get', 'w'], 0.55],
+                12, ['*', ['get', 'w'], 1.4],
+                16, ['*', ['get', 'w'], 3.0]],
+            },
+          },
           ...['plates', 'temperature', 'precipitation'].map((id) => ({
             id, type: 'raster', source: id,
             layout: { visibility: 'none' },
