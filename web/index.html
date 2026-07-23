@@ -33,6 +33,18 @@
       position: absolute; top: 8px; right: 10px; cursor: pointer;
       color: #8b94a6; font: 14px ui-monospace, monospace;
     }
+    #lore input, #lore textarea {
+      width: 100%; box-sizing: border-box; margin: 4px 0;
+      background: #141a26; color: #ded7c4; border: 1px solid #2a3040;
+      border-radius: 4px; padding: 6px 8px; font: 13px Georgia, serif;
+    }
+    #lore textarea { height: 90px; resize: vertical; }
+    #lore button {
+      background: #2a3550; color: #ded7c4; border: 1px solid #3a4a6a;
+      border-radius: 4px; padding: 5px 12px; margin-right: 6px; cursor: pointer;
+      font: 12px ui-monospace, monospace;
+    }
+    #lore .danger { color: #d89090; }
   </style>
 </head>
 <body>
@@ -45,7 +57,7 @@
     <div class="annals" id="lore-annals" style="display:none"></div>
   </div>
   <div id="hud">
-    <span id="pos">fractal</span>
+    <span id="pos">fractal · shift-click to leave a mark</span>
     <select id="overlay" style="margin-left:10px;background:#141a26;color:#cdd6e4;border:1px solid #333;border-radius:4px">
       <option value="">overlay: none</option>
       <option value="plates">plates</option>
@@ -249,6 +261,108 @@
     });
     map.on('mouseenter', 'settlement-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'settlement-dots', () => { map.getCanvas().style.cursor = ''; });
+
+    // --- Player annotations ----------------------------------------------
+    let notesData = { type: 'FeatureCollection', features: [] };
+
+    function noteFeature(n) {
+      return {
+        type: 'Feature', id: n.id,
+        geometry: { type: 'Point', coordinates: [n.lng, n.lat] },
+        properties: { id: n.id, title: n.title, body: n.body },
+      };
+    }
+
+    async function loadNotes() {
+      try {
+        const r = await (await fetch('/notes')).json();
+        notesData.features = r.notes.map(noteFeature);
+        map.getSource('notes')?.setData(notesData);
+      } catch {}
+    }
+
+    map.on('load', () => {
+      map.addSource('notes', { type: 'geojson', data: notesData });
+      map.addLayer({
+        id: 'note-marks', type: 'circle', source: 'notes',
+        paint: {
+          'circle-radius': 5, 'circle-color': '#e8c464',
+          'circle-stroke-color': '#141a26', 'circle-stroke-width': 1.5,
+        },
+      });
+      map.addLayer({
+        id: 'note-labels', type: 'symbol', source: 'notes', minzoom: 4,
+        layout: {
+          'text-field': ['get', 'title'], 'text-font': ['Open Sans Semibold'],
+          'text-size': 11, 'text-offset': [0, 1], 'text-anchor': 'top',
+        },
+        paint: { 'text-color': '#e8c464', 'text-halo-color': '#0c1018', 'text-halo-width': 1.4 },
+      });
+      loadNotes();
+    });
+
+    function showNoteForm(lngLat) {
+      loreToken++; // cancel any lore polling
+      panel.style.display = 'block';
+      el('lore-title').textContent = 'Leave a mark';
+      el('lore-meta').textContent =
+        `${lngLat.lat.toFixed(4)}, ${lngLat.lng.toFixed(4)}`;
+      el('lore-annals').style.display = 'none';
+      el('lore-body').innerHTML = '';
+      const name = document.createElement('input');
+      name.placeholder = 'Name this place or moment';
+      const body = document.createElement('textarea');
+      body.placeholder = 'What happened here? (optional)';
+      const save = document.createElement('button');
+      save.textContent = 'set the mark';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'never mind';
+      save.onclick = async () => {
+        const resp = await fetch('/notes', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ lat: lngLat.lat, lng: lngLat.lng, title: name.value, body: body.value }),
+        });
+        if (!resp.ok) { el('lore-meta').textContent = await resp.text(); return; }
+        const n = await resp.json();
+        notesData.features.push(noteFeature(n));
+        map.getSource('notes').setData(notesData);
+        showNote(n);
+      };
+      cancel.onclick = () => { panel.style.display = 'none'; };
+      el('lore-body').append(name, body, save, cancel);
+      name.focus();
+    }
+
+    function showNote(n) {
+      loreToken++;
+      panel.style.display = 'block';
+      el('lore-title').textContent = n.title;
+      el('lore-meta').textContent = 'your mark';
+      el('lore-annals').style.display = 'none';
+      el('lore-body').textContent = n.body || '';
+      const rm = document.createElement('button');
+      rm.textContent = 'strike this mark';
+      rm.className = 'danger';
+      rm.onclick = async () => {
+        await fetch(`/notes/${n.id}`, { method: 'DELETE' });
+        notesData.features = notesData.features.filter((f) => f.properties.id !== n.id);
+        map.getSource('notes').setData(notesData);
+        panel.style.display = 'none';
+      };
+      const spacer = document.createElement('div');
+      spacer.style.marginTop = '10px';
+      el('lore-body').append(spacer, rm);
+    }
+
+    map.on('click', 'note-marks', (e) => {
+      e.originalEvent._noteHit = true;
+      showNote(e.features[0].properties);
+    });
+    map.on('mouseenter', 'note-marks', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'note-marks', () => { map.getCanvas().style.cursor = ''; });
+    map.on('click', (e) => {
+      if (e.originalEvent.shiftKey && !e.originalEvent._noteHit) showNoteForm(e.lngLat);
+    });
     document.getElementById('overlay').addEventListener('change', (e) => {
       for (const id of ['plates', 'temperature', 'precipitation']) {
         map.setLayoutProperty(id, 'visibility', id === e.target.value ? 'visible' : 'none');

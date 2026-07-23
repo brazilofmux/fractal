@@ -101,6 +101,12 @@ ago is proud and threadbare on the lands it kept. The tenure web is
 canon too, so a chronicle knows exactly which grudge sits in which
 manor.
 
+And the world takes your marks: shift-click anywhere to leave an
+annotation — a name and a note, gold on the map, labeled as you zoom.
+Marks are the one authored layer in a derived world: stored in
+`notes.sqlite` keyed by seed alone, so they survive generator
+upgrades. Click a mark to read it; strike it when it no longer serves.
+
 ## Run it
 
 ```sh

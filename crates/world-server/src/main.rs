@@ -1,3 +1,5 @@
+mod notes;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -5,8 +7,9 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::json;
 use tower_http::services::ServeDir;
 use world_gen::{Planet, GEN_VERSION};
@@ -17,6 +20,7 @@ struct App {
     planet: Arc<Planet>,
     cache_dir: PathBuf,
     lore: Arc<lore::LoreEngine>,
+    notes: notes::NoteStore,
 }
 
 #[tokio::main]
@@ -43,10 +47,15 @@ async fn main() {
         lore.model,
     );
 
+    let notes = notes::NoteStore::open(std::path::Path::new("notes.sqlite"), seed)
+        .expect("open notes store");
+    println!("notes: {} marks on this world", notes.list().len());
+
     let app = Arc::new(App {
         planet: Arc::new(Planet::new(seed)),
         cache_dir,
         lore: Arc::new(lore),
+        notes,
     });
 
     // Solve the global drainage graph before serving: every tile at every
@@ -75,6 +84,8 @@ async fn main() {
     let router = Router::new()
         .route("/tiles/{layer}/{z}/{x}/{y}", get(tile))
         .route("/lore/{id}", get(lore_entry))
+        .route("/notes", get(notes_list).post(notes_add))
+        .route("/notes/{id}", delete(notes_delete))
         .fallback_service(ServeDir::new("web"))
         .with_state(app.clone());
 
@@ -231,6 +242,34 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
         }
     }
     Json(body).into_response()
+}
+
+#[derive(Deserialize)]
+struct NewNote {
+    lat: f64,
+    lng: f64,
+    title: String,
+    #[serde(default)]
+    body: String,
+}
+
+async fn notes_list(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(json!({ "notes": app.notes.list() }))
+}
+
+async fn notes_add(State(app): State<Arc<App>>, Json(n): Json<NewNote>) -> Response {
+    match app.notes.add(n.lat, n.lng, &n.title, &n.body) {
+        Ok(note) => Json(json!(note)).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+async fn notes_delete(State(app): State<Arc<App>>, Path(id): Path<i64>) -> Response {
+    if app.notes.delete(id) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
 }
 
 /// Best-effort atomic cache write: unique temp name, then rename, so a
