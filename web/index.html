@@ -28,6 +28,8 @@
       font: 11px/1.6 ui-monospace, monospace; color: #a9b0bf;
     }
     #lore .annals div { margin-bottom: 2px; }
+    #lore .annals div.person { color: #a8c8e8; cursor: pointer; }
+    #lore .annals div.person:hover { text-decoration: underline dotted; }
     #lore .quiet { color: #8b94a6; font-style: italic; }
     #lore #lore-close {
       position: absolute; top: 8px; right: 10px; cursor: pointer;
@@ -241,9 +243,18 @@
 
     function renderAnnals(r) {
       const a = el('lore-annals');
-      if (!r.annals || !r.annals.length) return;
+      const annals = r.annals || [];
+      const people = r.people || [];
+      if (!annals.length && !people.length) return;
       a.innerHTML = '';
-      for (const entry of r.annals) {
+      for (const p of people) {
+        const d = document.createElement('div');
+        d.className = 'person';
+        d.textContent = p.text;
+        d.onclick = () => showLore(p.id, p.text.split(' — ')[0], p.text.split(' — ')[1] || '');
+        a.append(d);
+      }
+      for (const entry of annals) {
         const d = document.createElement('div');
         d.textContent = entry;
         a.append(d);

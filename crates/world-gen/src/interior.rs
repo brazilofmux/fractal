@@ -64,6 +64,9 @@ pub struct Notable {
     pub name: String,
     pub role: String,
     pub age: u32,
+    pub female: bool,
+    /// Stable person slot within the settlement, for lore ids.
+    pub slot: u8,
 }
 
 pub struct Interior {
@@ -198,6 +201,8 @@ pub fn interior(planet: &Planet, settlement_index: usize) -> Interior {
             name: crate::history::person_name(splitmix64(hn), female),
             role,
             age,
+            female,
+            slot: key as u8,
         });
     };
     match s.kind {
@@ -232,9 +237,9 @@ pub fn interior(planet: &Planet, settlement_index: usize) -> Interior {
     }
     if let Some(inn_name) = &inn {
         let role = if matches!(s.kind, SettlementKind::Village) && !has_inn {
-            format!("alewife of {inn_name}")
+            format!("alewife of the alehouse at the sign of {inn_name}")
         } else {
-            format!("keeper of {inn_name}")
+            format!("innkeeper of {inn_name}")
         };
         add(role, 18, &mut notables);
     }

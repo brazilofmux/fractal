@@ -12,6 +12,7 @@ pub mod history;
 pub mod hydrology;
 pub mod interior;
 pub mod peerage;
+pub mod people;
 
 use std::sync::OnceLock;
 
@@ -25,10 +26,11 @@ pub use history::{History, RealmHistory, Ruler, PRESENT_YEAR};
 pub use hydrology::{Hydrology, RiverEdge};
 pub use interior::{interior, Interior};
 pub use peerage::{Holding, House, Peerage};
+pub use people::{household, household_lines, people_of, person_at};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 13;
+pub const GEN_VERSION: u32 = 14;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -916,6 +918,70 @@ mod tests {
         let other = Planet::new(42);
         assert_eq!(geo.features.len(), other.geography().features.len());
         assert_eq!(geo.features[0].name, other.geography().features[0].name);
+    }
+
+    #[test]
+    fn households_are_era_true_and_deterministic() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let (mut widows, mut lost_total, mut people_seen) = (0u32, 0u32, 0u32);
+
+        for (i, s) in civ.settlements.iter().enumerate().step_by(7) {
+            for (_, role, slot) in people_of(planet, i) {
+                let head = person_at(planet, s.cell, slot).expect("listed people resolve");
+                let hh = household(planet, s.cell, slot, &head);
+                let hh2 = household(planet, s.cell, slot, &head);
+                people_seen += 1;
+
+                // Determinism.
+                assert_eq!(
+                    hh.children.iter().map(|c| &c.name).collect::<Vec<_>>(),
+                    hh2.children.iter().map(|c| &c.name).collect::<Vec<_>>()
+                );
+
+                // Parents are a real generation older, or dead at adult ages.
+                for p in [&hh.parents.0, &hh.parents.1] {
+                    if p.alive {
+                        assert!(p.age >= head.age + 20 && p.age <= head.age + 35);
+                    } else {
+                        assert!((21..=85).contains(&p.age));
+                    }
+                }
+
+                // The cloth stays celibate; the wed stay era-plausible.
+                if role.contains("priest") {
+                    assert!(hh.spouse.is_none(), "a priest with a spouse");
+                }
+                if let Some(sp) = &hh.spouse {
+                    assert!((14..=85).contains(&sp.age));
+                    if !sp.alive {
+                        widows += 1;
+                    }
+                    // Children born in wedlock, spaced like the era spaces
+                    // them, none older than the marriage.
+                    let mut prev: Option<u32> = None;
+                    for c in &hh.children {
+                        assert!(c.age < head.age.saturating_sub(12));
+                        if let Some(p) = prev {
+                            assert!(p >= c.age + 2, "birth interval under two years");
+                        }
+                        prev = Some(c.age);
+                    }
+                } else {
+                    assert!(hh.children.is_empty(), "children out of wedlock");
+                }
+                lost_total += hh.lost;
+            }
+        }
+        assert!(people_seen > 100, "sample too small: {people_seen}");
+        assert!(widows > 0, "the era's mortality must widow someone");
+        assert!(lost_total > 0, "23% infant mortality must show somewhere");
+
+        // Every capital's reigning monarch resolves as a person.
+        let cap = civ.settlements.iter().find(|s| s.capital).unwrap();
+        let ruler = person_at(planet, cap.cell, people::SLOT_RULER).unwrap();
+        assert!(ruler.role.contains("Realm of"));
+        assert!(household_lines(planet, cap.cell, people::SLOT_RULER).is_some());
     }
 
     #[test]

@@ -199,36 +199,16 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
             body["annals"] = lines.into_iter().map(|l| json!(l)).collect();
         }
     }
-    // Likewise a settlement's interior: wards, trades, notable people.
+    // Likewise a settlement's interior: wards and trades as plain lines,
+    // people as clickable atlas references.
     if let Some(cell) = id.strip_prefix('s').and_then(|c| c.parse::<u32>().ok()) {
         let civ = app.planet.civilization();
         if let Some(i) = civ.settlements.iter().position(|s| s.cell == cell) {
             let inside = world_gen::interior(&app.planet, i);
             let mut lines: Vec<String> = Vec::new();
-            if let Some(hold) = app.planet.peerage().holding(cell) {
-                let liege = civ
-                    .settlements
-                    .iter()
-                    .find(|t| t.cell == hold.liege_cell)
-                    .map(|t| {
-                        if t.capital {
-                            format!("the crown of {}", t.name)
-                        } else {
-                            format!("the lord of {}", t.name)
-                        }
-                    })
-                    .unwrap_or_else(|| "the crown".into());
-                lines.push(format!(
-                    "Held by {} {} of House {} ({}), of {}",
-                    hold.title, hold.holder, hold.house, hold.age, liege
-                ));
-            }
             if !inside.wards.is_empty() {
                 let names: Vec<&str> = inside.wards.iter().map(|w| w.name.as_str()).collect();
                 lines.push(format!("Wards: {}", names.join(" · ")));
-            }
-            for n in &inside.notables {
-                lines.push(format!("{}, {} ({})", n.name, n.role, n.age));
             }
             if !inside.trades.is_empty() {
                 let t: Vec<String> = inside
@@ -240,6 +220,23 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
                 lines.push(format!("Trades: {}", t.join(", ")));
             }
             body["annals"] = lines.into_iter().map(|l| json!(l)).collect();
+            body["people"] = world_gen::people_of(&app.planet, i)
+                .into_iter()
+                .map(|(name, role, slot)| {
+                    json!({ "id": format!("p{cell}x{slot}"), "text": format!("{name} — {role}") })
+                })
+                .collect();
+        }
+    }
+    // A person's household is generator truth: shown instantly.
+    if id.starts_with('p') {
+        if let Some((cell, slot)) = id[1..]
+            .split_once('x')
+            .and_then(|(c, s)| Some((c.parse::<u32>().ok()?, s.parse::<u8>().ok()?)))
+        {
+            if let Some((_, lines)) = world_gen::household_lines(&app.planet, cell, slot) {
+                body["annals"] = lines.into_iter().map(|l| json!(l)).collect();
+            }
         }
     }
     Json(body).into_response()

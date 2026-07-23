@@ -30,6 +30,8 @@ pub struct Ruler {
     pub title: &'static str,
     pub house: String,
     pub accession: u32,
+    /// Age at accession — with the year, this dates every royal birthday.
+    pub accession_age: u32,
     /// Year the reign ended; `PRESENT_YEAR` means they reign today.
     pub death: u32,
     /// How the reign ended, when it ended memorably.
@@ -207,6 +209,7 @@ impl History {
                     title: if female { "Queen" } else { "King" },
                     house: house.clone(),
                     accession: year,
+                    accession_age,
                     death: death.min(PRESENT_YEAR),
                     note,
                 });
@@ -334,7 +337,7 @@ fn realm_name_of(civ: &crate::Civilization, capital_cell: u32) -> String {
 /// Calibrate the Gompertz slope so that the mean age of adult death matches
 /// the profile's life expectancy at 20 — same procedure as WorldMaker's
 /// `CalibrateGompertzB`, run once per build (it is deterministic).
-fn calibrate_gompertz_b() -> f64 {
+pub(crate) fn calibrate_gompertz_b() -> f64 {
     let (mut lo, mut hi) = (0.02f64, 0.25f64);
     for _ in 0..40 {
         let b = 0.5 * (lo + hi);
@@ -365,7 +368,7 @@ fn mean_adult_death_age(b: f64) -> f64 {
 
 /// Sample an age of death, conditional on being alive at `from_age` —
 /// inverse-CDF walk down the same yearly hazard used for calibration.
-fn death_age(h: u64, from_age: u32, b: f64) -> u32 {
+pub(crate) fn death_age(h: u64, from_age: u32, b: f64) -> u32 {
     let u = (h >> 11) as f64 / (1u64 << 53) as f64;
     let mut surviving = 1.0;
     for age in from_age..MAX_LIFESPAN {

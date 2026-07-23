@@ -31,12 +31,20 @@ pub enum FeatureRef {
     Realm(usize),
     /// Index into `geography().features`.
     Natural(usize),
+    /// A person: (settlement cell, person slot).
+    Person(u32, u8),
 }
 
 /// Parse a feature id: `s{cell}` for a settlement, `r{cell}` for the realm
 /// whose capital sits on that cell, `n{index}` for a natural feature.
 pub fn parse_id(planet: &Planet, id: &str) -> Option<FeatureRef> {
     let (kind, rest) = id.split_at(1);
+    if kind == "p" {
+        let (cell, slot) = rest.split_once('x')?;
+        let (cell, slot) = (cell.parse().ok()?, slot.parse().ok()?);
+        return world_gen::person_at(planet, cell, slot)
+            .map(|_| FeatureRef::Person(cell, slot));
+    }
     let num: u32 = rest.parse().ok()?;
     let civ = planet.civilization();
     match kind {
@@ -62,6 +70,9 @@ pub fn feature_name(planet: &Planet, fref: FeatureRef) -> String {
         FeatureRef::Settlement(i) => civ.settlements[i].name.clone(),
         FeatureRef::Realm(i) => format!("Realm of {}", civ.settlements[i].name),
         FeatureRef::Natural(i) => planet.geography().features[i].name.clone(),
+        FeatureRef::Person(cell, slot) => world_gen::person_at(planet, cell, slot)
+            .map(|h| h.name)
+            .unwrap_or_default(),
     }
 }
 
@@ -71,6 +82,10 @@ pub fn realm_of(planet: &Planet, fref: FeatureRef) -> Option<(String, String)> {
     let civ = planet.civilization();
     let s = match fref {
         FeatureRef::Settlement(i) | FeatureRef::Realm(i) => &civ.settlements[i],
+        FeatureRef::Person(cell, slot) => {
+            let head = world_gen::person_at(planet, cell, slot)?;
+            &civ.settlements[head.settlement_index]
+        }
         FeatureRef::Natural(_) => return None,
     };
     Some((format!("r{}", s.realm_capital), format!("Realm of {}", s.realm)))
@@ -117,6 +132,44 @@ pub fn prompt_for(planet: &Planet, fref: FeatureRef, realm_body: Option<&str>) -
                 f.name,
                 f.kind.word(),
                 natural_facts(planet, i),
+            )
+        }
+        FeatureRef::Person(cell, slot) => {
+            let (head, lines) = world_gen::household_lines(planet, cell, slot)
+                .expect("person parsed, so they resolve");
+            let civ = planet.civilization();
+            let s = &civ.settlements[head.settlement_index];
+            let mut facts = String::new();
+            line(&mut facts, format!("{}, aged {}", head.role, head.age));
+            line(
+                &mut facts,
+                format!(
+                    "lives in the {} of {} (population ~{}), Realm of {}",
+                    match s.kind {
+                        SettlementKind::City => "city",
+                        SettlementKind::Town => "town",
+                        SettlementKind::Village => "village",
+                    },
+                    s.name,
+                    round_pop(s.population),
+                    s.realm
+                ),
+            );
+            for l in &lines {
+                line(&mut facts, l.clone());
+            }
+            line(
+                &mut facts,
+                "era: pre-industrial; households of this kind are the norm, \
+                 and the ages above are already era-true"
+                    .into(),
+            );
+            format!(
+                "Write the atlas note (80-140 words) on {}, {}. A life, not a \
+                 legend: their standing, their household, and one habit or \
+                 worry the town knows them by. The household facts are canon \
+                 and every name in them may be used.\n\nCanon facts:\n{}",
+                head.name, head.role, facts
             )
         }
     }

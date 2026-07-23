@@ -110,6 +110,17 @@ entry of its own, and woven into every nearby settlement's brief: a
 port's harbor opens on a named gulf, a mountain town sits among a
 named range. Major rivers now carry their names on the map as well.
 
+And everyone has a name: every notable, manor holder, and reigning
+monarch resolves to a household three generations deep — parents
+(mostly buried), a spouse (sometimes buried; widowhood is not written,
+it merely happens on the same Gompertz curve as kings), children
+spaced two-and-a-half years apart until fertility ends, roughly a
+fifth of infants lost — all era-true to TinyMUX.WorldMaker's
+PersonTables and computed on demand from the seed. People are lore
+features: click the innkeeper in a settlement's roster and get a life,
+not a legend, whose prose must agree with the family tree shown
+beneath it.
+
 And the world takes your marks: shift-click anywhere to leave an
 annotation — a name and a note, gold on the map, labeled as you zoom.
 Marks are the one authored layer in a derived world: stored in

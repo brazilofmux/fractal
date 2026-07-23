@@ -105,7 +105,7 @@ impl LoreEngine {
             return LoreStatus::NotFound;
         };
         let realm = match fref {
-            FeatureRef::Settlement(_) => realm_of(planet, fref),
+            FeatureRef::Settlement(_) | FeatureRef::Person(..) => realm_of(planet, fref),
             _ => None,
         };
 
