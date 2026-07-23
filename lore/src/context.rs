@@ -412,6 +412,33 @@ fn settlement_facts(planet: &Planet, i: usize) -> String {
         line(format!("{}, {} — aged {}", n.name, n.role, n.age));
     }
 
+    // The economy: what it makes, buys, and lacks (canon).
+    let econ = planet.economy();
+    line(format!(
+        "by the standards of the age it is {}",
+        world_gen::Economy::wealth_word(econ.wealth[i])
+    ));
+    if !econ.produces[i].is_empty() {
+        line(format!(
+            "it produces {}",
+            econ.produces[i].iter().map(|g| g.word()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !econ.imports[i].is_empty() {
+        let buys: Vec<String> = econ.imports[i]
+            .iter()
+            .take(4)
+            .map(|(g, src)| format!("{} from {}", g.word(), civ.settlements[*src].name))
+            .collect();
+        line(format!("it buys {}", buys.join(", ")));
+    }
+    if !econ.wanting[i].is_empty() {
+        line(format!(
+            "it goes without {} — no road or lane reaches a source",
+            econ.wanting[i].iter().map(|g| g.word()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
     // Era demographics (Medieval profile, TinyMUX.WorldMaker).
     line("era: pre-industrial. Life expectancy ~33 at birth (mid-40s if \
           childhood is survived); roughly a fifth of infants do not live a \
@@ -481,6 +508,14 @@ fn realm_facts(planet: &Planet, capital: usize) -> String {
                 (d * 6371.0).round() as u32,
                 compass(cap.pos, other.pos)
             ),
+        );
+    }
+
+    // The crown's income, for a chronicle that knows what a war costs.
+    if let Some(marks) = planet.economy().realm_ledger.get(&cap.cell) {
+        line(
+            &mut f,
+            format!("the crown's ledger runs to some {marks} marks a year"),
         );
     }
 

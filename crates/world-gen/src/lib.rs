@@ -7,6 +7,7 @@
 //! (civilization, lore) slot in as further functions of (seed, position).
 
 pub mod civilization;
+pub mod economy;
 pub mod geography;
 pub mod history;
 pub mod hydrology;
@@ -21,6 +22,7 @@ use world_core::hash::{hash3, splitmix64};
 use world_core::noise::{fbm, ridged};
 
 pub use civilization::{river_name, Civilization, Road, Settlement, SettlementKind};
+pub use economy::{Economy, Good, Lane};
 pub use geography::{Geography, NaturalFeature, NaturalKind};
 pub use history::{History, RealmHistory, Ruler, PRESENT_YEAR};
 pub use hydrology::{Hydrology, RiverEdge};
@@ -30,7 +32,7 @@ pub use people::{household, household_lines, people_of, person_at};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 14;
+pub const GEN_VERSION: u32 = 15;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -84,6 +86,7 @@ pub struct Planet {
     hist: OnceLock<History>,
     peers: OnceLock<Peerage>,
     geo: OnceLock<Geography>,
+    econ: OnceLock<Economy>,
 }
 
 impl Planet {
@@ -109,6 +112,7 @@ impl Planet {
             hist: OnceLock::new(),
             peers: OnceLock::new(),
             geo: OnceLock::new(),
+            econ: OnceLock::new(),
         }
     }
 
@@ -138,6 +142,11 @@ impl Planet {
     /// The named natural world, built once per planet.
     pub fn geography(&self) -> &Geography {
         self.geo.get_or_init(|| Geography::build(self))
+    }
+
+    /// Production, trade flows, wealth and ledgers, built once per planet.
+    pub fn economy(&self) -> &Economy {
+        self.econ.get_or_init(|| Economy::build(self))
     }
 
     /// Tectonics at a lat/lon (radians), including the boundary-wander warp.
@@ -982,6 +991,66 @@ mod tests {
         let ruler = person_at(planet, cap.cell, people::SLOT_RULER).unwrap();
         assert!(ruler.role.contains("Realm of"));
         assert!(household_lines(planet, cap.cell, people::SLOT_RULER).is_some());
+    }
+
+    #[test]
+    fn the_economy_flows_and_balances() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let econ = planet.economy();
+
+        // Everyone makes something; ports make salt; imports come from
+        // real producers and only for goods not made at home.
+        for (i, s) in civ.settlements.iter().enumerate() {
+            assert!(!econ.produces[i].is_empty(), "{} makes nothing", s.name);
+            if s.port {
+                assert!(econ.produces[i].contains(&Good::Salt));
+            }
+            for &(good, src) in &econ.imports[i] {
+                assert!(
+                    econ.produces[src].contains(&good),
+                    "{} imports {} from a non-producer",
+                    s.name,
+                    good.word()
+                );
+                assert!(
+                    !econ.produces[i].contains(&good),
+                    "{} imports what it already makes",
+                    s.name
+                );
+            }
+        }
+
+        // Trade actually moves: roads carry goods, lanes exist between
+        // ports, and every wealth class is represented somewhere.
+        assert!(
+            econ.road_flows.iter().filter(|f| !f.is_empty()).count() > 50,
+            "the roads are empty"
+        );
+        assert!(!econ.lanes.is_empty(), "a world of ports without shipping");
+        for l in &econ.lanes {
+            assert!(civ.settlements[l.a].port && civ.settlements[l.b].port);
+        }
+        for class in 1..=5u8 {
+            assert!(
+                econ.wealth.iter().any(|&w| w == class),
+                "no settlement is {}",
+                Economy::wealth_word(class)
+            );
+        }
+
+        // Ledgers: every realm collects something, and the total is the
+        // sum over its settlements — taxes don't leak.
+        let mut total: u64 = 0;
+        for (i, s) in civ.settlements.iter().enumerate() {
+            total += s.population as u64 * econ.wealth[i] as u64 / 40;
+        }
+        assert_eq!(total, econ.realm_ledger.values().sum::<u64>());
+        assert!(econ.realm_ledger.values().all(|&v| v > 0));
+
+        // Deterministic.
+        let other = Planet::new(42);
+        assert_eq!(econ.wealth, other.economy().wealth);
     }
 
     #[test]

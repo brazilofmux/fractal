@@ -121,6 +121,16 @@ features: click the innkeeper in a settlement's roster and get a life,
 not a legend, whose prose must agree with the family tree shown
 beneath it.
 
+And the goods move: production follows geography (salt and fish at
+the ports, timber in the named forests, iron under the ranges, wool on
+the steppe, wine where the climate consents), and demand walks the
+actual road network — plus dashed sea lanes between ports, where
+shipping is cheap — to the nearest producer by multi-source shortest
+paths. Click a road and see what travels it; click a lane and see what
+ships. Settlements know what they make, buy, and go without; wealth
+(struggling to rich) reshapes their briefs; taxes climb the tenure web
+to a crown's ledger the realm chronicle can spend on its wars.
+
 And the world takes your marks: shift-click anywhere to leave an
 annotation — a name and a note, gold on the map, labeled as you zoom.
 Marks are the one authored layer in a derived world: stored in

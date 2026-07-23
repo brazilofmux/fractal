@@ -122,6 +122,11 @@
             tiles: [location.origin + '/tiles/labels/{z}/{x}/{y}.mvt'],
             maxzoom: 8,
           },
+          lanes: {
+            type: 'vector',
+            tiles: [location.origin + '/tiles/lanes/{z}/{x}/{y}.mvt'],
+            maxzoom: 10,
+          },
         },
         layers: [
           { id: 'space', type: 'background', paint: { 'background-color': '#01010a' } },
@@ -137,6 +142,16 @@
                 7, ['*', ['get', 'w'], 0.55],
                 12, ['*', ['get', 'w'], 1.4],
                 16, ['*', ['get', 'w'], 3.0]],
+            },
+          },
+          {
+            id: 'sea-lanes', type: 'line', source: 'lanes', 'source-layer': 'lanes',
+            minzoom: 3,
+            layout: { 'line-cap': 'round' },
+            paint: {
+              'line-color': '#6d93b8', 'line-opacity': 0.45,
+              'line-dasharray': [1, 2.5],
+              'line-width': ['+', 0.8, ['*', 0.6, ['get', 'flow']]],
             },
           },
           {
@@ -313,6 +328,29 @@
     });
     map.on('mouseenter', 'settlement-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'settlement-dots', () => { map.getCanvas().style.cursor = ''; });
+    // Roads and sea lanes tell you what travels them.
+    map.on('click', 'roads', (e) => {
+      const f = e.features[0].properties;
+      loreToken++;
+      panel.style.display = 'block';
+      el('lore-title').textContent = 'A road';
+      el('lore-meta').textContent = ['track', 'lesser road', 'high road'][3 - f.tier] || 'road';
+      el('lore-annals').style.display = 'none';
+      el('lore-body').textContent = f.goods
+        ? `Carts and drovers pass with ${f.goods}.`
+        : 'Little moves here but local traffic.';
+    });
+    map.on('click', 'sea-lanes', (e) => {
+      const f = e.features[0].properties;
+      loreToken++;
+      panel.style.display = 'block';
+      el('lore-title').textContent = 'A sea lane';
+      el('lore-meta').textContent = `${f.a} ↔ ${f.b}`;
+      el('lore-annals').style.display = 'none';
+      el('lore-body').textContent = f.goods
+        ? `Ships work this water with ${f.goods}.`
+        : 'A quiet crossing.';
+    });
     for (const layer of ['nature-names-along', 'nature-names-at']) {
       map.on('click', layer, (e) => {
         const f = e.features[0].properties;

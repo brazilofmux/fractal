@@ -331,9 +331,11 @@ pub fn render_settlements_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u
     layer.encode()
 }
 
-/// Roads as a line layer, tiered like the settlements they connect.
+/// Roads as a line layer, tiered like the settlements they connect, each
+/// carrying what actually travels it.
 pub fn render_roads_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
     let civ = planet.civilization();
+    let econ = planet.economy();
     let max_tier: u8 = match z {
         0..=3 => 1,
         4..=5 => 2,
@@ -347,13 +349,66 @@ pub fn render_roads_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
         if r.tier > max_tier || !r.pts.iter().any(|&p| frame.near(p, margin)) {
             continue;
         }
+        let (goods, flow) = flow_attrs(&econ.road_flows[i]);
         layer.add(
             i as u64,
             mvt::Geom::Line(r.pts.iter().map(|&p| frame.project(p)).collect()),
-            &[("tier", mvt::Value::Int(r.tier as i64))],
+            &[
+                ("tier", mvt::Value::Int(r.tier as i64)),
+                ("goods", mvt::Value::Str(goods)),
+                ("flow", mvt::Value::Int(flow)),
+            ],
         );
     }
     layer.encode()
+}
+
+/// Sea lanes between ports, dashed on the water, carrying the cheap bulk
+/// of the world's trade.
+pub fn render_lanes_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
+    let econ = planet.economy();
+    let civ = planet.civilization();
+    let frame = TileFrame::new(z, x, y);
+    let margin = planet.hydrology().max_cell_size() * 3.0;
+
+    let mut layer = mvt::Layer::new("lanes");
+    if z < 3 {
+        return layer.encode();
+    }
+    for (i, l) in econ.lanes.iter().enumerate() {
+        if !l.pts.iter().any(|&p| frame.near(p, margin)) {
+            continue;
+        }
+        let (goods, flow) = flow_attrs(&l.flows);
+        layer.add(
+            i as u64,
+            mvt::Geom::Line(l.pts.iter().map(|&p| frame.project(p)).collect()),
+            &[
+                ("goods", mvt::Value::Str(goods)),
+                ("flow", mvt::Value::Int(flow)),
+                ("a", mvt::Value::Str(civ.settlements[l.a].name.clone())),
+                ("b", mvt::Value::Str(civ.settlements[l.b].name.clone())),
+            ],
+        );
+    }
+    layer.encode()
+}
+
+fn flow_attrs(flows: &[(world_gen::Good, u32)]) -> (String, i64) {
+    let goods = flows
+        .iter()
+        .take(3)
+        .map(|(g, _)| g.word())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let total: u32 = flows.iter().map(|(_, v)| v).sum();
+    let class = match total {
+        0 => 0,
+        1..=20 => 1,
+        21..=80 => 2,
+        _ => 3,
+    };
+    (goods, class)
 }
 
 /// Debug layer: plate mosaic. Each plate gets a stable pastel; boundaries

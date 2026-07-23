@@ -112,7 +112,7 @@ async fn tile(
     if !matches!(
         layer.as_str(),
         "elevation" | "plates" | "temperature" | "precipitation" | "rivers" | "settlements"
-            | "roads" | "labels"
+            | "roads" | "labels" | "lanes"
     )
         || z > MAX_ZOOM
         || x >= (1u32 << z.min(31))
@@ -120,7 +120,10 @@ async fn tile(
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let (ext, mime) = if matches!(layer.as_str(), "rivers" | "settlements" | "roads" | "labels") {
+    let (ext, mime) = if matches!(
+        layer.as_str(),
+        "rivers" | "settlements" | "roads" | "labels" | "lanes"
+    ) {
         ("mvt", "application/x-protobuf")
     } else {
         ("png", "image/png")
@@ -145,6 +148,7 @@ async fn tile(
         "settlements" => world_tiles::render_settlements_tile(&render_app.planet, z, x, y),
         "roads" => world_tiles::render_roads_tile(&render_app.planet, z, x, y),
         "labels" => world_tiles::render_labels_tile(&render_app.planet, z, x, y),
+        "lanes" => world_tiles::render_lanes_tile(&render_app.planet, z, x, y),
         _ => world_tiles::render_elevation_tile(&render_app.planet, z, x, y),
     })
     .await
@@ -181,6 +185,9 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
     if let Some(cell) = id.strip_prefix('r').and_then(|c| c.parse::<u32>().ok()) {
         if let Some(rh) = app.planet.history().realm(cell) {
             let mut lines: Vec<String> = Vec::new();
+            if let Some(marks) = app.planet.economy().realm_ledger.get(&cell) {
+                lines.push(format!("The crown's ledger: some {marks} marks a year"));
+            }
             if let Some(houses) = app.planet.peerage().houses(cell) {
                 for h in houses {
                     let seat = match h.held_seat {
@@ -218,6 +225,31 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
                     .map(|t| format!("{} {}", t.count, t.name))
                     .collect();
                 lines.push(format!("Trades: {}", t.join(", ")));
+            }
+            let econ = app.planet.economy();
+            lines.push(format!(
+                "Wealth: {}",
+                world_gen::Economy::wealth_word(econ.wealth[i])
+            ));
+            if !econ.produces[i].is_empty() {
+                lines.push(format!(
+                    "Makes: {}",
+                    econ.produces[i].iter().map(|g| g.word()).collect::<Vec<_>>().join(", ")
+                ));
+            }
+            if !econ.imports[i].is_empty() {
+                let buys: Vec<String> = econ.imports[i]
+                    .iter()
+                    .take(5)
+                    .map(|(g, src)| format!("{} from {}", g.word(), civ.settlements[*src].name))
+                    .collect();
+                lines.push(format!("Buys: {}", buys.join(", ")));
+            }
+            if !econ.wanting[i].is_empty() {
+                lines.push(format!(
+                    "Goes without: {}",
+                    econ.wanting[i].iter().map(|g| g.word()).collect::<Vec<_>>().join(", ")
+                ));
             }
             body["annals"] = lines.into_iter().map(|l| json!(l)).collect();
             body["people"] = world_gen::people_of(&app.planet, i)
