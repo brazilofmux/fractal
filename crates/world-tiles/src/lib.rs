@@ -239,10 +239,57 @@ pub fn render_rivers_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
         if !pts.iter().any(|&p| frame.near(p, margin)) {
             continue;
         }
+        let mut attrs = vec![("w", mvt::Value::Int(rv.w as i64))];
+        // Sizable rivers carry their names, so the viewer can label them.
+        if rv.w >= 3 {
+            if let Some(name) = world_gen::river_name(planet.seed, hy, rv.a) {
+                attrs.push(("name", mvt::Value::Str(name)));
+            }
+        }
         layer.add(
             ei as u64,
             mvt::Geom::Line(pts.iter().map(|&p| frame.project(p)).collect()),
-            &[("w", mvt::Value::Int(rv.w as i64))],
+            &attrs,
+        );
+    }
+    layer.encode()
+}
+
+/// Natural-feature name labels as a vector layer: each feature is a short
+/// line along its principal axis (long ranges read lengthwise), gated by
+/// the feature's minimum zoom.
+pub fn render_labels_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
+    let geo = planet.geography();
+    let frame = TileFrame::new(z, x, y);
+    let margin = planet.hydrology().max_cell_size() * 4.0;
+
+    let mut layer = mvt::Layer::new("labels");
+    for (i, f) in geo.features.iter().enumerate() {
+        if z < f.min_zoom as u32 {
+            continue;
+        }
+        let (a, b) = f.axis;
+        if !(frame.near(f.center, margin) || frame.near(a, margin) || frame.near(b, margin)) {
+            continue;
+        }
+        // Long features label along their axis; roundish ones at a point.
+        let geom = if f.elong >= 16 {
+            mvt::Geom::Line(vec![
+                frame.project(a),
+                frame.project(f.center),
+                frame.project(b),
+            ])
+        } else {
+            mvt::Geom::Points(vec![frame.project(f.center)])
+        };
+        layer.add(
+            i as u64,
+            geom,
+            &[
+                ("name", mvt::Value::Str(f.name.clone())),
+                ("kind", mvt::Value::Str(f.kind.tag().to_string())),
+                ("id", mvt::Value::Str(format!("n{i}"))),
+            ],
         );
     }
     layer.encode()

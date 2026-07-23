@@ -399,7 +399,7 @@ const ENDS: [&str; 18] = [
 const RIVER_ENDS: [&str; 4] = ["ford", "bridge", "mouth", "bank"];
 const PORT_ENDS: [&str; 3] = ["haven", "port", "quay"];
 
-fn gen_name(mut x: u64, port: bool, river: bool) -> String {
+pub(crate) fn gen_name(mut x: u64, port: bool, river: bool) -> String {
     let mut pick = |m: usize| {
         x = splitmix64(x);
         (x % m as u64) as usize

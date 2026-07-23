@@ -112,7 +112,7 @@ async fn tile(
     if !matches!(
         layer.as_str(),
         "elevation" | "plates" | "temperature" | "precipitation" | "rivers" | "settlements"
-            | "roads"
+            | "roads" | "labels"
     )
         || z > MAX_ZOOM
         || x >= (1u32 << z.min(31))
@@ -120,7 +120,7 @@ async fn tile(
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let (ext, mime) = if matches!(layer.as_str(), "rivers" | "settlements" | "roads") {
+    let (ext, mime) = if matches!(layer.as_str(), "rivers" | "settlements" | "roads" | "labels") {
         ("mvt", "application/x-protobuf")
     } else {
         ("png", "image/png")
@@ -144,6 +144,7 @@ async fn tile(
         "rivers" => world_tiles::render_rivers_tile(&render_app.planet, z, x, y),
         "settlements" => world_tiles::render_settlements_tile(&render_app.planet, z, x, y),
         "roads" => world_tiles::render_roads_tile(&render_app.planet, z, x, y),
+        "labels" => world_tiles::render_labels_tile(&render_app.planet, z, x, y),
         _ => world_tiles::render_elevation_tile(&render_app.planet, z, x, y),
     })
     .await

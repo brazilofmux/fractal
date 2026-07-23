@@ -7,6 +7,7 @@
 //! (civilization, lore) slot in as further functions of (seed, position).
 
 pub mod civilization;
+pub mod geography;
 pub mod history;
 pub mod hydrology;
 pub mod interior;
@@ -19,6 +20,7 @@ use world_core::hash::{hash3, splitmix64};
 use world_core::noise::{fbm, ridged};
 
 pub use civilization::{river_name, Civilization, Road, Settlement, SettlementKind};
+pub use geography::{Geography, NaturalFeature, NaturalKind};
 pub use history::{History, RealmHistory, Ruler, PRESENT_YEAR};
 pub use hydrology::{Hydrology, RiverEdge};
 pub use interior::{interior, Interior};
@@ -26,7 +28,7 @@ pub use peerage::{Holding, House, Peerage};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 12;
+pub const GEN_VERSION: u32 = 13;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -79,6 +81,7 @@ pub struct Planet {
     civ: OnceLock<Civilization>,
     hist: OnceLock<History>,
     peers: OnceLock<Peerage>,
+    geo: OnceLock<Geography>,
 }
 
 impl Planet {
@@ -103,6 +106,7 @@ impl Planet {
             civ: OnceLock::new(),
             hist: OnceLock::new(),
             peers: OnceLock::new(),
+            geo: OnceLock::new(),
         }
     }
 
@@ -127,6 +131,11 @@ impl Planet {
     /// Great houses, manors and the tenure web, built once per planet.
     pub fn peerage(&self) -> &Peerage {
         self.peers.get_or_init(|| Peerage::build(self))
+    }
+
+    /// The named natural world, built once per planet.
+    pub fn geography(&self) -> &Geography {
+        self.geo.get_or_init(|| Geography::build(self))
     }
 
     /// Tectonics at a lat/lon (radians), including the boundary-wander warp.
@@ -866,6 +875,50 @@ mod tests {
     }
 
     #[test]
+    fn geography_names_the_world() {
+        let planet = planet();
+        let geo = planet.geography();
+        let count = |k: NaturalKind| geo.features.iter().filter(|f| f.kind == k).count();
+
+        assert_eq!(count(NaturalKind::Ocean), 1, "one world ocean");
+        assert!(count(NaturalKind::Continent) >= 1, "no continents");
+        assert!(count(NaturalKind::Range) >= 3, "a tectonic world needs ranges");
+        assert!(count(NaturalKind::Forest) >= 3);
+        assert!(count(NaturalKind::Island) >= 3);
+        assert!(count(NaturalKind::Gulf) >= 1);
+
+        // Names are unique and axes stay near their features.
+        let mut names = std::collections::HashSet::new();
+        for f in &geo.features {
+            assert!(names.insert(f.name.clone()), "duplicate name {}", f.name);
+            assert!(f.min_zoom <= 4);
+            let (a, b) = f.axis;
+            let d = |p: [f64; 3], q: [f64; 3]| {
+                ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+            };
+            assert!(d(a, f.center) < 0.6 && d(b, f.center) < 0.6);
+        }
+
+        // Nearly every settlement stands on named ground.
+        let civ = planet.civilization();
+        let housed = civ
+            .settlements
+            .iter()
+            .filter(|s| geo.landmass_at(s.cell).is_some())
+            .count();
+        assert!(
+            housed * 10 >= civ.settlements.len() * 9,
+            "{housed}/{} settlements on named landmasses",
+            civ.settlements.len()
+        );
+
+        // Deterministic like everything else.
+        let other = Planet::new(42);
+        assert_eq!(geo.features.len(), other.geography().features.len());
+        assert_eq!(geo.features[0].name, other.geography().features[0].name);
+    }
+
+    #[test]
     fn tectonics_is_sane() {
         let planet = planet();
         for i in 0..500 {
@@ -880,3 +933,4 @@ mod tests {
         }
     }
 }
+

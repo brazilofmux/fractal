@@ -115,6 +115,11 @@
             tiles: [location.origin + '/tiles/settlements/{z}/{x}/{y}.mvt'],
             maxzoom: 14,
           },
+          labels: {
+            type: 'vector',
+            tiles: [location.origin + '/tiles/labels/{z}/{x}/{y}.mvt'],
+            maxzoom: 8,
+          },
         },
         layers: [
           { id: 'space', type: 'background', paint: { 'background-color': '#01010a' } },
@@ -153,6 +158,42 @@
               'circle-stroke-width': 1.2,
             },
           },
+          {
+            id: 'river-names', type: 'symbol', source: 'rivers', 'source-layer': 'rivers',
+            minzoom: 6, filter: ['has', 'name'],
+            layout: {
+              'symbol-placement': 'line', 'text-field': ['get', 'name'],
+              'text-font': ['Open Sans Semibold'], 'text-size': 10.5,
+            },
+            paint: { 'text-color': '#8fc3e8', 'text-halo-color': '#0c1018', 'text-halo-width': 1.2 },
+          },
+          ...[
+            { id: 'nature-names-along', placement: 'line-center', geom: 'LineString' },
+            { id: 'nature-names-at', placement: 'point', geom: 'Point' },
+          ].map((v) => ({
+            id: v.id, type: 'symbol', source: 'labels', 'source-layer': 'labels',
+            filter: ['==', ['geometry-type'], v.geom],
+            layout: {
+              'symbol-placement': v.placement,
+              'text-field': ['get', 'name'],
+              'text-font': ['Open Sans Semibold'],
+              'text-size': ['match', ['get', 'kind'],
+                'continent', 18, 'ocean', 16, 'sea', 13, 'desert', 12,
+                'range', 11.5, 11],
+              'text-letter-spacing': ['match', ['get', 'kind'],
+                'continent', 0.28, 'ocean', 0.22, 'sea', 0.12, 0.04],
+              'text-transform': ['match', ['get', 'kind'],
+                'continent', 'uppercase', 'ocean', 'uppercase', 'none'],
+              'text-max-width': 7,
+            },
+            paint: {
+              'text-color': ['match', ['get', 'kind'],
+                'ocean', '#86b9e0', 'sea', '#86b9e0', 'gulf', '#86b9e0',
+                'range', '#cdbb96', 'forest', '#96bd8a', 'desert', '#d6c08d',
+                '#d8cfb8'],
+              'text-halo-color': '#0c1018', 'text-halo-width': 1.2,
+            },
+          })),
           {
             id: 'settlement-names', type: 'symbol', source: 'settlements', 'source-layer': 'settlements',
             layout: {
@@ -261,6 +302,14 @@
     });
     map.on('mouseenter', 'settlement-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'settlement-dots', () => { map.getCanvas().style.cursor = ''; });
+    for (const layer of ['nature-names-along', 'nature-names-at']) {
+      map.on('click', layer, (e) => {
+        const f = e.features[0].properties;
+        showLore(f.id, f.name, f.kind);
+      });
+      map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
+    }
 
     // --- Player annotations ----------------------------------------------
     let notesData = { type: 'FeatureCollection', features: [] };

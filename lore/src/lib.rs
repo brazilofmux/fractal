@@ -105,8 +105,8 @@ impl LoreEngine {
             return LoreStatus::NotFound;
         };
         let realm = match fref {
-            FeatureRef::Settlement(_) => Some(realm_of(planet, fref)),
-            FeatureRef::Realm(_) => None,
+            FeatureRef::Settlement(_) => realm_of(planet, fref),
+            _ => None,
         };
 
         if let Some(body) = self.cached(id) {
@@ -148,10 +148,10 @@ impl LoreEngine {
     fn generate(&self, planet: &Planet, id: &str, fref: FeatureRef) -> Result<(), String> {
         let realm_body = match fref {
             FeatureRef::Settlement(_) => {
-                let (realm_id, _) = realm_of(planet, fref);
+                let (realm_id, _) = realm_of(planet, fref).expect("settlements have realms");
                 Some(self.ensure(planet, &realm_id)?)
             }
-            FeatureRef::Realm(_) => None,
+            _ => None,
         };
         let writer = self.writer.as_ref().ok_or("lore disabled")?;
         let prompt = prompt_for(planet, fref, realm_body.as_deref());

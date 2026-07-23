@@ -29,25 +29,29 @@ pub enum FeatureRef {
     Settlement(usize),
     /// Index of the capital settlement of a realm.
     Realm(usize),
+    /// Index into `geography().features`.
+    Natural(usize),
 }
 
 /// Parse a feature id: `s{cell}` for a settlement, `r{cell}` for the realm
-/// whose capital sits on that cell.
+/// whose capital sits on that cell, `n{index}` for a natural feature.
 pub fn parse_id(planet: &Planet, id: &str) -> Option<FeatureRef> {
-    let (kind, cell) = id.split_at(1);
-    let cell: u32 = cell.parse().ok()?;
+    let (kind, rest) = id.split_at(1);
+    let num: u32 = rest.parse().ok()?;
     let civ = planet.civilization();
     match kind {
         "s" => civ
             .settlements
             .iter()
-            .position(|s| s.cell == cell)
+            .position(|s| s.cell == num)
             .map(FeatureRef::Settlement),
         "r" => civ
             .settlements
             .iter()
-            .position(|s| s.cell == cell && s.capital)
+            .position(|s| s.cell == num && s.capital)
             .map(FeatureRef::Realm),
+        "n" => ((num as usize) < planet.geography().features.len())
+            .then_some(FeatureRef::Natural(num as usize)),
         _ => None,
     }
 }
@@ -57,16 +61,19 @@ pub fn feature_name(planet: &Planet, fref: FeatureRef) -> String {
     match fref {
         FeatureRef::Settlement(i) => civ.settlements[i].name.clone(),
         FeatureRef::Realm(i) => format!("Realm of {}", civ.settlements[i].name),
+        FeatureRef::Natural(i) => planet.geography().features[i].name.clone(),
     }
 }
 
-/// The id of the realm a feature belongs to, and the realm's display name.
-pub fn realm_of(planet: &Planet, fref: FeatureRef) -> (String, String) {
+/// The id of the realm a feature belongs to, and the realm's display name
+/// (natural features answer to no crown).
+pub fn realm_of(planet: &Planet, fref: FeatureRef) -> Option<(String, String)> {
     let civ = planet.civilization();
     let s = match fref {
         FeatureRef::Settlement(i) | FeatureRef::Realm(i) => &civ.settlements[i],
+        FeatureRef::Natural(_) => return None,
     };
-    (format!("r{}", s.realm_capital), format!("Realm of {}", s.realm))
+    Some((format!("r{}", s.realm_capital), format!("Realm of {}", s.realm)))
 }
 
 /// The user-turn prompt for a feature: instruction + canon facts (+ the
@@ -100,7 +107,71 @@ pub fn prompt_for(planet: &Planet, fref: FeatureRef, realm_body: Option<&str>) -
                 realm_facts(planet, i),
             )
         }
+        FeatureRef::Natural(i) => {
+            let f = &planet.geography().features[i];
+            format!(
+                "Write the atlas entry (100-160 words) for {}, a {}. Write it \
+                 as geography first — what the land or water is like to cross, \
+                 what lives or fails to live there — and let any human history \
+                 stay at the edges.\n\nCanon facts:\n{}",
+                f.name,
+                f.kind.word(),
+                natural_facts(planet, i),
+            )
+        }
     }
+}
+
+fn natural_facts(planet: &Planet, i: usize) -> String {
+    let geo = planet.geography();
+    let civ = planet.civilization();
+    let f = &geo.features[i];
+    let (lat, lon) = unit_to_lat_lon(f.center);
+    let cl = planet.climate(lat, lon);
+
+    let mut out = String::new();
+    line(
+        &mut out,
+        format!(
+            "a {} roughly {} leagues across",
+            f.kind.word(),
+            world_gen::geography::breadth_leagues(f.cells)
+        ),
+    );
+    line(
+        &mut out,
+        format!(
+            "at {}; mean {:.0} °C, {} rainfall",
+            latitude_word(lat),
+            cl.temp_c,
+            precip_word(cl.precip)
+        ),
+    );
+    if let Some(land) = geo.landmass_at(f.anchor) {
+        if land.name != f.name {
+            line(&mut out, format!("it lies on {}", land.name));
+        }
+    }
+    // The nearest three settlements orient the reader.
+    let mut near: Vec<(f64, &world_gen::Settlement)> = civ
+        .settlements
+        .iter()
+        .map(|s| (chord(f.center, s.pos), s))
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (d, s) in near.iter().take(3) {
+        line(
+            &mut out,
+            format!(
+                "{} km {} lies {} (Realm of {})",
+                (d * 6371.0).round() as u32,
+                compass(f.center, s.pos),
+                s.name,
+                s.realm
+            ),
+        );
+    }
+    out
 }
 
 fn kind_word(s: &Settlement) -> &'static str {
@@ -142,6 +213,26 @@ fn settlement_facts(planet: &Planet, i: usize) -> String {
         biome_word(biome),
         latitude_word(lat)
     ));
+    // Named geography: where this place stands in the world's own terms.
+    let geo = planet.geography();
+    if let Some(land) = geo.landmass_at(s.cell) {
+        if land.kind == world_gen::NaturalKind::Island {
+            line(format!("it stands on {}", land.name));
+        }
+    }
+    if let Some(cov) = geo.cover_at(s.cell) {
+        line(format!("it lies within {}", cov.name));
+    }
+    if let Some(rel) = geo.relief_at(s.cell) {
+        line(format!("it sits among {}", rel.name));
+    } else if let Some(rng) = geo.nearest_range(s.pos, h.max_cell_size() * 6.0) {
+        line(format!("{} rises {} of it", rng.name, compass(s.pos, rng.center)));
+    }
+    if s.port {
+        if let Some(w) = geo.harbor_water(planet, s.cell) {
+            line(format!("its harbor opens on {}", w.name));
+        }
+    }
     line(format!(
         "climate: mean {:.0} °C, {} rainfall",
         cl.temp_c,

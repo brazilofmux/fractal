@@ -79,6 +79,7 @@ fn main() {
                 let mut bytes = world_tiles::render_rivers_tile(&planet, z, x, y);
                 bytes.extend(world_tiles::render_roads_tile(&planet, z, x, y));
                 bytes.extend(world_tiles::render_settlements_tile(&planet, z, x, y));
+                bytes.extend(world_tiles::render_labels_tile(&planet, z, x, y));
                 (tile_id(z, x, y), bytes)
             })
             .collect();
@@ -90,7 +91,7 @@ fn main() {
     }
     let path = std::path::PathBuf::from(format!("world-s{seed}-features.pmtiles"));
     let meta = format!(
-        r#"{{"name":"fractal seed {seed} (features)","vector_layers":[{{"id":"rivers","fields":{{"w":"Number"}}}},{{"id":"roads","fields":{{"tier":"Number"}}}},{{"id":"settlements","fields":{{"name":"String","rank":"Number","port":"Number","capital":"Number","realm":"String","cell":"Number","pop":"Number"}}}}]}}"#
+        r#"{{"name":"fractal seed {seed} (features)","vector_layers":[{{"id":"rivers","fields":{{"w":"Number","name":"String"}}}},{{"id":"roads","fields":{{"tier":"Number"}}}},{{"id":"settlements","fields":{{"name":"String","rank":"Number","port":"Number","capital":"Number","realm":"String","cell":"Number","pop":"Number"}}}},{{"id":"labels","fields":{{"name":"String","kind":"String","id":"String"}}}}]}}"#
     );
     let (addressed, contents, size) = vector
         .finish(&path, TileType::MVT, 0, vector_max as u8, &meta)
