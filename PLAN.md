@@ -110,6 +110,74 @@ Each phase ends with something you can look at.
 - **Phase 7 — Beyond (optional).** History simulation (wars, migrations, trade — DF-style
   but LLM-narrated). Player annotations/edits stored as overlays. PMTiles world export.
 
+*Phases 0–7 complete. What follows was planned after the world existed,
+which is why it reads less like engineering and more like appetite.*
+
+## Phases 8+ — deeper in
+
+The founding principles hold: everything is `f(seed, coordinates)` — and where
+time enters, `f(seed, coordinates, year)`. Nothing below breaks a phase that
+shipped; each layer reads the ones beneath it and writes none of them.
+
+- **Phase 8 — Names on the land.** The map has towns and rivers but the land
+  itself is mute. Derive and name the natural features: seas and gulfs from
+  ocean components, mountain ranges from tectonic belt segments, forests and
+  deserts from contiguous biome patches, islands from small landmasses. Each
+  becomes a lore-capable feature with a stable id, labeled on the map at the
+  right zooms (curved along ranges, spread across seas). The chronicler learns
+  geography: "east of the Thornfell Range, on the Gulf of Herring…"
+  *Milestone: zoom out and the map reads like a map.*
+
+- **Phase 9 — Everyone has a name.** Port WorldMaker's PersonTables outright:
+  Gompertz lifespans, marriage ages, birth intervals. Give every notable a
+  household — spouse, children, ages all era-true; give rulers consorts,
+  heirs, and sibling rivalries; let the annals record royal births, marriages
+  and suspicious deaths. People become lore features (`p{...}`): click the
+  harbormaster, get her story — which must agree with her family tree.
+  *Milestone: a family tree you can walk, three generations deep, for anyone.*
+
+- **Phase 10 — The price of salt.** Isolation's other half: economics. Manor
+  incomes from land and biome; taxes flowing up the tenure web (the crown's
+  ledger is the sum of its grudging lords); goods with sources — salt at
+  ports, timber in forests, iron in mountains — flowing along the actual
+  roads and sea lanes to actual markets. Wealth reshapes the lore: a town on
+  a salt road is rich and knows it; a realm cut off from the sea by a rival's
+  border remembers exactly which war did it.
+  *Milestone: click a road and see what travels it.*
+
+- **Phase 11 — The fourth coordinate.** Make the present year a parameter.
+  The history engine already simulates 500 years; expose them: a time slider
+  where populations grow, rulers succeed each other, plagues empty the ports,
+  and war outcomes actually move border villages between realms (allegiance
+  becomes a function of year, seeded by the wars both sides already agree
+  on). The chronicler writes from whatever year you're parked in.
+  *Milestone: drag the slider and watch a realm lose the war you read about.*
+
+- **Phase 12 — Street level.** The original promise was orbit down to street
+  level; this is the last flight of stairs. Diagram the cities: ward
+  geometry, walls and gates, the market square, the harbor — deterministic
+  city maps rendered from the interiors that already exist. Then let people
+  in: rooms generated on demand ("You stand on Herring Quay; Maldwyn is
+  counting hulls"), lore-narrated, cached as canon — and a bridge that speaks
+  MUX, because a world this stubborn about determinism deserves players
+  who type.
+  *Milestone: walk from the Saltwharf to the Gilded Ram without leaving text.*
+
+### Risks, named early
+
+- **Time-dependence (11) is the dangerous one** — it threatens every cache
+  key and tempts every layer to become stateful. Rule: year is an *input*,
+  never a state. Anything that can't be expressed as `f(seed, place, year)`
+  doesn't ship.
+- **Person-level lore (9) multiplies canon.** The SQLite cache handles scale,
+  but consistency pressure grows: a person's entry must agree with their
+  family tree, their settlement, their realm, and their era. Context assembly
+  stays the sole source of truth; the chronicler never gets to improvise
+  facts that generators could have supplied.
+- **Street level (12) is unbounded.** Scope it like the planet: coarse
+  constrains fine. Ward diagrams before room text; room text before anything
+  interactive; MUX last, and only if it still sounds fun when we get there.
+
 ## Risks, burned down early
 
 - **Hydrology across scales** → prototype the coarse drainage graph in Phase 4's first
