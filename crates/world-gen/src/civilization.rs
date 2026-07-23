@@ -370,8 +370,8 @@ fn jitter(seed: u64, grid: &world_core::cubegrid::CubeGrid, c: u32, ctr: [f64; 3
 }
 
 /// One corner-cutting pass (Chaikin); endpoints stay fixed so roads still
-/// meet their settlements exactly.
-fn chaikin(pts: &[[f64; 3]]) -> Vec<[f64; 3]> {
+/// meet their settlements exactly. (Sea lanes borrow it too.)
+pub(crate) fn chaikin(pts: &[[f64; 3]]) -> Vec<[f64; 3]> {
     if pts.len() < 3 {
         return pts.to_vec();
     }

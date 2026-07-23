@@ -36,12 +36,14 @@ pub use timeline::{founded_in, population_in, realm_in};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 16;
+pub const GEN_VERSION: u32 = 17;
 
 /// Version of the lore-facing context, kept apart from GEN_VERSION so a
 /// tile-only change does not orphan the written canon. Bump this when the
 /// context assembly or any generator fact feeding it changes meaning.
-pub const LORE_VERSION: u32 = 15;
+/// (16: honest sea lanes redrew the trade map, and with it every "buys X
+/// from Y" the chronicler had been told.)
+pub const LORE_VERSION: u32 = 16;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -1037,9 +1039,42 @@ mod tests {
             "the roads are empty"
         );
         assert!(!econ.lanes.is_empty(), "a world of ports without shipping");
+        let h = planet.hydrology();
+        let polyline_len = |pts: &[[f64; 3]]| -> f64 {
+            pts.windows(2)
+                .map(|w| {
+                    let d = [w[0][0] - w[1][0], w[0][1] - w[1][1], w[0][2] - w[1][2]];
+                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                })
+                .sum()
+        };
+        let mut rounds_a_cape = false;
         for l in &econ.lanes {
             assert!(civ.settlements[l.a].port && civ.settlements[l.b].port);
+            // A lane is a voyage: every point clear of the harbor mouths
+            // must be over ocean — no lane crosses a landmass.
+            for &p in &l.pts[3..l.pts.len().saturating_sub(3)] {
+                let c = h.grid.point_to_cell(p) as usize;
+                assert!(
+                    h.ocean_mask()[c],
+                    "the lane {} ↔ {} sails over dry land",
+                    civ.settlements[l.a].name,
+                    civ.settlements[l.b].name
+                );
+            }
+            let straight = {
+                let (a, b) = (civ.settlements[l.a].pos, civ.settlements[l.b].pos);
+                let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+            };
+            if polyline_len(&l.pts) > straight * 1.25 {
+                rounds_a_cape = true;
+            }
         }
+        assert!(
+            rounds_a_cape,
+            "no lane deviates from the chord — routing is doing nothing"
+        );
         for class in 1..=5u8 {
             assert!(
                 econ.wealth.iter().any(|&w| w == class),

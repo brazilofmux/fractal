@@ -155,8 +155,12 @@ impl Economy {
             .collect();
         let n_roads = edges.len();
 
-        // Sea lanes: each port to its two nearest fellow ports. Shipping is
-        // cheap: sea distance counts at less than half.
+        // Sea lanes: each port to its two nearest fellow ports — but a lane
+        // is a voyage, not a chord. Least-cost paths over the ocean cells
+        // (the water-borne twin of the road A*), hugging coasts the way era
+        // shipping did. The league rate stays cheap; the league count is
+        // now honest, so a strait is worth something, a cape costs its
+        // rounding, and a continent in the way is a continent in the way.
         let ports: Vec<usize> = (0..n).filter(|&i| civ.settlements[i].port).collect();
         let mut lanes: Vec<Lane> = Vec::new();
         let mut lane_pairs = std::collections::HashSet::new();
@@ -172,11 +176,20 @@ impl Economy {
                 if !lane_pairs.insert((a.min(b), a.max(b))) {
                     continue;
                 }
-                let (pa, pb) = (civ.settlements[a].pos, civ.settlements[b].pos);
-                let pts = (0..=4)
-                    .map(|k| slerp(pa, pb, k as f64 / 4.0))
-                    .collect();
-                edges.push((a, b, d * 0.45));
+                // No sea road, or one so long no shipper would ply it —
+                // then there is no lane, and the goods go overland or not
+                // at all. Honesty is the whole point.
+                let Some((cells, sailed)) =
+                    sea_route(h, civ.settlements[a].cell, civ.settlements[b].cell, d * 6.0)
+                else {
+                    continue;
+                };
+                let mut pts = Vec::with_capacity(cells.len() + 2);
+                pts.push(civ.settlements[a].pos);
+                pts.extend(cells.iter().map(|&c| h.grid.cell_center(c)));
+                pts.push(civ.settlements[b].pos);
+                let pts = crate::civilization::chaikin(&pts);
+                edges.push((a, b, sailed * 0.45));
                 lanes.push(Lane {
                     a,
                     b,
@@ -325,6 +338,92 @@ impl Economy {
     }
 }
 
+/// Least-cost path over ocean cells between two coastal settlements'
+/// harbors. Coastal water sails at face value; open sea costs a third
+/// more, so routes hug the shore where the shore cooperates — era
+/// navigation in one multiplier. Returns the water cells crossed and the
+/// effective sailed cost, or None when no voyage under `budget` exists.
+fn sea_route(
+    h: &crate::Hydrology,
+    from: u32,
+    to: u32,
+    budget: f64,
+) -> Option<(Vec<u32>, f64)> {
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, HashMap, HashSet};
+
+    let ocean = h.ocean_mask();
+    let starts: Vec<u32> = h
+        .adj(from as usize)
+        .iter()
+        .copied()
+        .filter(|&c| ocean[c as usize])
+        .collect();
+    let goals: HashSet<u32> = h
+        .adj(to as usize)
+        .iter()
+        .copied()
+        .filter(|&c| ocean[c as usize])
+        .collect();
+    if starts.is_empty() || goals.is_empty() {
+        return None;
+    }
+    let goal_centers: Vec<[f64; 3]> = goals.iter().map(|&c| h.grid.cell_center(c)).collect();
+    let heur = |p: [f64; 3]| -> f64 {
+        goal_centers
+            .iter()
+            .map(|&g| chord(p, g))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let open_sea = |c: u32| -> bool {
+        h.adj(c as usize).iter().all(|&nb| ocean[nb as usize])
+    };
+
+    let mut g: HashMap<u32, f64> = HashMap::new();
+    let mut came: HashMap<u32, u32> = HashMap::new();
+    let mut open: BinaryHeap<Reverse<(K, u32)>> = BinaryHeap::new();
+    for &s in &starts {
+        g.insert(s, 0.0);
+        open.push(Reverse((K(heur(h.grid.cell_center(s))), s)));
+    }
+    let mut expanded = 0usize;
+    while let Some(Reverse((K(f), c))) = open.pop() {
+        if goals.contains(&c) {
+            let mut path = vec![c];
+            let mut cur = c;
+            while let Some(&p) = came.get(&cur) {
+                path.push(p);
+                cur = p;
+            }
+            path.reverse();
+            return Some((path, g[&c]));
+        }
+        if f > budget {
+            return None;
+        }
+        expanded += 1;
+        if expanded > 60_000 {
+            return None;
+        }
+        let gc = g[&c];
+        let pc = h.grid.cell_center(c);
+        for &nb in h.adj(c as usize) {
+            if !ocean[nb as usize] {
+                continue;
+            }
+            let pn = h.grid.cell_center(nb);
+            let mult = if open_sea(nb) { 1.35 } else { 1.0 };
+            let ng = gc + chord(pc, pn) * mult;
+            if g.get(&nb).is_none_or(|&old| ng < old - 1e-12) {
+                g.insert(nb, ng);
+                came.insert(nb, c);
+                open.push(Reverse((K(ng + heur(pn)), nb)));
+            }
+        }
+    }
+    None
+}
+
 #[derive(PartialEq)]
 struct K(f64);
 impl Eq for K {}
@@ -337,16 +436,6 @@ impl Ord for K {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.total_cmp(&other.0)
     }
-}
-
-fn slerp(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    let v = [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ];
-    let inv = 1.0 / (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    [v[0] * inv, v[1] * inv, v[2] * inv]
 }
 
 #[inline]
