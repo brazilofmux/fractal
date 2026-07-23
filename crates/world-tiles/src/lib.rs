@@ -5,6 +5,7 @@
 //! that carved their valleys into the raster.
 
 pub mod mvt;
+pub mod pmtiles;
 
 use image::ImageEncoder;
 use rayon::prelude::*;

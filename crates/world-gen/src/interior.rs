@@ -189,7 +189,7 @@ pub fn interior(planet: &Planet, settlement_index: usize) -> Interior {
 
     // ---- Notables: the people worth a line in the atlas.
     let mut notables = Vec::new();
-    let mut add = |role: String, key: i64, notables: &mut Vec<Notable>| {
+    let add = |role: String, key: i64, notables: &mut Vec<Notable>| {
         let hn = hash3(seed, key, 2, 0);
         let female = hn % 5 < 2;
         // Triangular age distribution around the mid-forties.

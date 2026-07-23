@@ -120,6 +120,22 @@ Because the server speaks standard XYZ tiles, QGIS or any slippy-map client
 works too: add `http://127.0.0.1:8632/tiles/elevation/{z}/{x}/{y}.png` as an
 XYZ tile layer.
 
+## Bake it
+
+A world can be exported as PMTiles archives — the map without the server:
+
+```sh
+cargo run --release -p world-tiles --bin bake -- 42 6   # seed, raster max zoom
+```
+
+This writes `world-s42-raster.pmtiles` (the elevation pyramid) and
+`world-s42-features.pmtiles` (rivers, roads and settlements as one
+vector tileset, two zoom levels deeper). QGIS opens both directly;
+MapLibre reads them through the pmtiles protocol. The writer is
+hand-rolled PMTiles v3 — Hilbert-ordered, clustered, deduplicated (an
+ocean of empty vector tiles collapses to a single entry), verified by
+tests against an independent decoder.
+
 ## Layout
 
 - `crates/world-core` — positional hashing, gradient noise, sphere/Mercator geometry, cube-sphere grid
