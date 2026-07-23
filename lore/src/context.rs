@@ -8,7 +8,9 @@
 //! so the prose gets villages of hundreds, not metropolises of millions.
 
 use world_core::geo::unit_to_lat_lon;
-use world_gen::{civilization, classify_biome, Biome, Planet, Settlement, SettlementKind};
+use world_gen::{
+    civilization, classify_biome, Biome, Planet, Settlement, SettlementKind, PRESENT_YEAR,
+};
 
 pub const SYSTEM_PROMPT: &str = "You are the chronicler of a vast, real world \
 you have walked end to end. You write atlas entries: grounded, specific, \
@@ -89,8 +91,11 @@ pub fn prompt_for(planet: &Planet, fref: FeatureRef, realm_body: Option<&str>) -
         FeatureRef::Realm(i) => {
             let s = &planet.civilization().settlements[i];
             format!(
-                "Write the founding chronicle (150-220 words) of the Realm of {} — \
-                 its origin, its character, and one tension alive in it today.\n\nCanon facts:\n{}",
+                "Write the chronicle (180-260 words) of the Realm of {} — its \
+                 origin, its character, and how the annals below shaped it. \
+                 The annals are canon: cite their people, wars and years \
+                 freely, elaborate them, never contradict them, and end on \
+                 whatever tension the recent entries leave alive.\n\nCanon facts:\n{}",
                 s.name,
                 realm_facts(planet, i),
             )
@@ -160,6 +165,19 @@ fn settlement_facts(planet: &Planet, i: usize) -> String {
     }
     if s.capital {
         line("seat of its realm".into());
+    }
+    if let Some(r) = planet.history().current_ruler(s.realm_capital) {
+        line(format!(
+            "the realm is ruled by {} {} of House {}, on the seat since year {} \
+             (the present year is {})",
+            r.title, r.name, r.house, r.accession, PRESENT_YEAR
+        ));
+    }
+    // What living memory holds: the realm's last few decades.
+    if let Some(rh) = planet.history().realm(s.realm_capital) {
+        for a in rh.annals.iter().filter(|a| a.year + 40 >= PRESENT_YEAR).take(2) {
+            line(format!("in living memory (year {}): {}", a.year, a.text));
+        }
     }
 
     // Nearest neighbors, with distance and direction — the social geography.
@@ -267,6 +285,24 @@ fn realm_facts(planet: &Planet, capital: usize) -> String {
                 compass(cap.pos, other.pos)
             ),
         );
+    }
+
+    // The annals: the realm's simulated five centuries, entry by entry.
+    if let Some(rh) = planet.history().realm(cap.cell) {
+        line(
+            &mut f,
+            format!(
+                "the seat has passed through {} reigns since the founding in year {}; \
+                 the present year is {}",
+                rh.rulers.len(),
+                rh.founding_year,
+                PRESENT_YEAR
+            ),
+        );
+        f.push_str("\nThe annals:\n");
+        for a in &rh.annals {
+            line(&mut f, format!("Year {} — {}", a.year, a.text));
+        }
     }
     f
 }

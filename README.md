@@ -11,7 +11,7 @@ hand-authoring wall.
 
 See [PLAN.md](PLAN.md) for the full design and phase roadmap.
 
-## Status: Phase 6
+## Status: Phase 7 (history)
 
 Seeded planet served as standard Web Mercator XYZ raster tiles and rendered in
 the browser on a MapLibre globe. Tiles are hillshaded (seam-free by
@@ -71,6 +71,16 @@ offline and the panel says so.
 To enable lore, start the server with `ANTHROPIC_API_KEY` set (or an
 `ant auth login` profile). The model defaults to `claude-opus-4-8`;
 override with `LORE_MODEL`.
+
+And the world has a past: five hundred years of deterministic annals,
+simulated realm by realm from the seed. Dynasties whose rulers live and
+die by a Gompertz-Makeham mortality curve (ported from
+TinyMUX.WorldMaker's medieval profile), wars both belligerents' annals
+record identically to the year, plagues that come ashore at the ports
+and walk inland a year later, famines that prefer the dry realms.
+The annals render under every realm chronicle in the viewer, and they
+feed the chronicler as canon — so neighboring realms' stories cite the
+same wars, the same fallen kings, the same hungry years.
 
 ## Run it
 

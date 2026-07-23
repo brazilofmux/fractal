@@ -299,7 +299,8 @@ mod tests {
         assert_eq!(body, "Entry #2", "settlement written after its realm");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         let prompts = order.lock().unwrap();
-        assert!(prompts[0].contains("founding chronicle"), "realm first");
+        assert!(prompts[0].contains("chronicle"), "realm first");
+        assert!(prompts[0].contains("The annals:"), "realm prompt carries the annals");
         assert!(prompts[1].contains("atlas entry"));
         assert!(
             prompts[1].contains("Entry #1"),

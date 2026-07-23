@@ -147,11 +147,12 @@ async fn tile(
 async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
     let planet = app.planet.clone();
     let engine = app.lore.clone();
-    let status = tokio::task::spawn_blocking(move || engine.request(&planet, &id))
+    let req_id = id.clone();
+    let status = tokio::task::spawn_blocking(move || engine.request(&planet, &req_id))
         .await
         .expect("lore task");
 
-    let body = match status {
+    let mut body = match status {
         lore::LoreStatus::Ready { name, body, realm } => json!({
             "status": "ready", "name": name, "body": body,
             "realm": realm.map(|(id, name)| json!({"id": id, "name": name})),
@@ -163,6 +164,17 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
             return (StatusCode::NOT_FOUND, "no such feature").into_response()
         }
     };
+    // Realm annals come straight from the generator: instantly available in
+    // every state, canon whether or not the chronicle is written yet.
+    if let Some(cell) = id.strip_prefix('r').and_then(|c| c.parse::<u32>().ok()) {
+        if let Some(rh) = app.planet.history().realm(cell) {
+            body["annals"] = rh
+                .annals
+                .iter()
+                .map(|a| json!(format!("Year {} — {}", a.year, a.text)))
+                .collect();
+        }
+    }
     Json(body).into_response()
 }
 

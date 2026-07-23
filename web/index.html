@@ -23,6 +23,11 @@
     #lore .meta { font: 11px ui-monospace, monospace; color: #8b94a6; margin-bottom: 8px; }
     #lore .meta a { color: #7fb0d8; cursor: pointer; text-decoration: underline dotted; }
     #lore .body { white-space: pre-wrap; }
+    #lore .annals {
+      margin-top: 10px; padding-top: 8px; border-top: 1px solid #2a3040;
+      font: 11px/1.6 ui-monospace, monospace; color: #a9b0bf;
+    }
+    #lore .annals div { margin-bottom: 2px; }
     #lore .quiet { color: #8b94a6; font-style: italic; }
     #lore #lore-close {
       position: absolute; top: 8px; right: 10px; cursor: pointer;
@@ -37,6 +42,7 @@
     <h3 id="lore-title"></h3>
     <div class="meta" id="lore-meta"></div>
     <div class="body" id="lore-body"></div>
+    <div class="annals" id="lore-annals" style="display:none"></div>
   </div>
   <div id="hud">
     <span id="pos">fractal</span>
@@ -176,7 +182,20 @@
       el('lore-title').textContent = title;
       el('lore-meta').textContent = subtitle || '';
       el('lore-body').innerHTML = '<span class="quiet">The chronicler is consulted…</span>';
+      el('lore-annals').style.display = 'none';
       pollLore(id, token, title);
+    }
+
+    function renderAnnals(r) {
+      const a = el('lore-annals');
+      if (!r.annals || !r.annals.length) return;
+      a.innerHTML = '';
+      for (const entry of r.annals) {
+        const d = document.createElement('div');
+        d.textContent = entry;
+        a.append(d);
+      }
+      a.style.display = 'block';
     }
 
     async function pollLore(id, token, title, misses = 0) {
@@ -194,6 +213,7 @@
         r = { status: 'failed', message: 'the server is not answering — is it running?' };
       }
       if (token !== loreToken) return; // user moved on
+      renderAnnals(r);
       if (r.status === 'generating') {
         el('lore-body').innerHTML = '<span class="quiet">The chronicler is writing…</span>';
         setTimeout(() => pollLore(id, token, title), 2500);

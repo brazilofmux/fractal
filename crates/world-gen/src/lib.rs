@@ -7,6 +7,7 @@
 //! (civilization, lore) slot in as further functions of (seed, position).
 
 pub mod civilization;
+pub mod history;
 pub mod hydrology;
 
 use std::sync::OnceLock;
@@ -16,11 +17,12 @@ use world_core::hash::{hash3, splitmix64};
 use world_core::noise::{fbm, ridged};
 
 pub use civilization::{river_name, Civilization, Road, Settlement, SettlementKind};
+pub use history::{History, RealmHistory, Ruler, PRESENT_YEAR};
 pub use hydrology::{Hydrology, RiverEdge};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 9;
+pub const GEN_VERSION: u32 = 10;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -71,6 +73,7 @@ pub struct Planet {
     plates: Vec<Plate>,
     hydro: OnceLock<Hydrology>,
     civ: OnceLock<Civilization>,
+    hist: OnceLock<History>,
 }
 
 impl Planet {
@@ -93,6 +96,7 @@ impl Planet {
             plates,
             hydro: OnceLock::new(),
             civ: OnceLock::new(),
+            hist: OnceLock::new(),
         }
     }
 
@@ -107,6 +111,11 @@ impl Planet {
     /// (pulls in hydrology if it hasn't been solved yet).
     pub fn civilization(&self) -> &Civilization {
         self.civ.get_or_init(|| Civilization::build(self))
+    }
+
+    /// Five hundred years of deterministic annals, built once per planet.
+    pub fn history(&self) -> &History {
+        self.hist.get_or_init(|| History::build(self))
     }
 
     /// Tectonics at a lat/lon (radians), including the boundary-wander warp.
@@ -632,6 +641,93 @@ mod tests {
         assert_eq!(ca.roads.len(), cb.roads.len());
         for (x, y) in ca.settlements.iter().zip(&cb.settlements) {
             assert_eq!((x.cell, &x.name, &x.realm), (y.cell, &y.name, &y.realm));
+        }
+    }
+
+    #[test]
+    fn history_has_unbroken_dynasties_and_sane_lifespans() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let hist = planet.history();
+        let mut reigns = Vec::new();
+        for cap in civ.settlements.iter().filter(|s| s.capital) {
+            let r = hist.realm(cap.cell).expect("every realm has annals");
+            let mut year = r.founding_year;
+            for ruler in &r.rulers {
+                assert_eq!(ruler.accession, year, "gap or overlap in the succession");
+                assert!(ruler.death > ruler.accession);
+                assert!(ruler.death <= PRESENT_YEAR);
+                reigns.push((ruler.death - ruler.accession) as f64);
+                year = ruler.death.max(year + 1);
+            }
+            assert_eq!(
+                r.rulers.last().unwrap().death,
+                PRESENT_YEAR,
+                "someone must hold the seat today"
+            );
+            assert!(!r.annals.is_empty());
+            assert!(r.annals.iter().all(|a| a.year <= PRESENT_YEAR));
+            assert!(r.annals.windows(2).all(|w| w[0].year <= w[1].year));
+        }
+        // Gompertz sanity: medieval reigns average out somewhere plausible.
+        let mean = reigns.iter().sum::<f64>() / reigns.len() as f64;
+        assert!(
+            (8.0..40.0).contains(&mean),
+            "mean reign of {mean:.1} years is not medieval"
+        );
+    }
+
+    #[test]
+    fn wars_are_agreed_upon_by_both_sides() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let hist = planet.history();
+        let capitals: Vec<_> = civ.settlements.iter().filter(|s| s.capital).collect();
+        let mut total_wars = 0;
+        for a in &capitals {
+            let ah = hist.realm(a.cell).unwrap();
+            for b in &capitals {
+                if a.cell == b.cell {
+                    continue;
+                }
+                // War annals begin with the needle; a ruler falling in that
+                // war merely mentions it mid-sentence.
+                let needle = format!("war with the Realm of {} over", b.name);
+                for annal in ah.annals.iter().filter(|x| x.text.starts_with(&needle)) {
+                    total_wars += 1;
+                    // The other side must record the same war, same year.
+                    let bh = hist.realm(b.cell).unwrap();
+                    let counter = format!("war with the Realm of {} over", a.name);
+                    assert!(
+                        bh.annals
+                            .iter()
+                            .any(|x| x.year == annal.year && x.text.starts_with(&counter)),
+                        "the Realm of {} does not remember its year-{} war with {}",
+                        b.name,
+                        annal.year,
+                        a.name
+                    );
+                }
+            }
+        }
+        assert!(total_wars > 10, "a 500-year era with almost no wars");
+    }
+
+    #[test]
+    fn history_is_deterministic() {
+        let a = Planet::new(42);
+        let b = Planet::new(42);
+        let cap = a
+            .civilization()
+            .settlements
+            .iter()
+            .find(|s| s.capital)
+            .unwrap()
+            .cell;
+        let (ha, hb) = (a.history().realm(cap).unwrap(), b.history().realm(cap).unwrap());
+        assert_eq!(ha.annals.len(), hb.annals.len());
+        for (x, y) in ha.annals.iter().zip(&hb.annals) {
+            assert_eq!((x.year, &x.text), (y.year, &y.text));
         }
     }
 
