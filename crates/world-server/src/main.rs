@@ -175,6 +175,31 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
                 .collect();
         }
     }
+    // Likewise a settlement's interior: wards, trades, notable people.
+    if let Some(cell) = id.strip_prefix('s').and_then(|c| c.parse::<u32>().ok()) {
+        let civ = app.planet.civilization();
+        if let Some(i) = civ.settlements.iter().position(|s| s.cell == cell) {
+            let inside = world_gen::interior(&app.planet, i);
+            let mut lines: Vec<String> = Vec::new();
+            if !inside.wards.is_empty() {
+                let names: Vec<&str> = inside.wards.iter().map(|w| w.name.as_str()).collect();
+                lines.push(format!("Wards: {}", names.join(" · ")));
+            }
+            for n in &inside.notables {
+                lines.push(format!("{}, {} ({})", n.name, n.role, n.age));
+            }
+            if !inside.trades.is_empty() {
+                let t: Vec<String> = inside
+                    .trades
+                    .iter()
+                    .take(8)
+                    .map(|t| format!("{} {}", t.count, t.name))
+                    .collect();
+                lines.push(format!("Trades: {}", t.join(", ")));
+            }
+            body["annals"] = lines.into_iter().map(|l| json!(l)).collect();
+        }
+    }
     Json(body).into_response()
 }
 

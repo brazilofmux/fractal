@@ -82,6 +82,16 @@ The annals render under every realm chronicle in the viewer, and they
 feed the chronicler as canon — so neighboring realms' stories cite the
 same wars, the same fallen kings, the same hungry years.
 
+And every settlement opens: wards gated by population (a patriciate
+above five thousand souls, a harborside ward for ports, the Shambles
+kept downwind), trades by the classic support-value tables (one
+shoemaker per 150 souls, one inn per 2000 — the algorithm is ported
+from the author's Isolation kingdom simulator), and notable people
+with names and ages — the harbormaster, the guild master, the keeper
+of the inn. All of it is a pure function of the seed, computed on
+demand, shown instantly in the panel, and fed to the chronicler as
+canon so the prose and the roster never disagree.
+
 ## Run it
 
 ```sh

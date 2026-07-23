@@ -215,6 +215,25 @@ fn settlement_facts(planet: &Planet, i: usize) -> String {
         n => format!("{n} roads meet here"),
     });
 
+    // Inside the walls: wards, trades, and people worth naming (canon).
+    let inside = world_gen::interior(planet, i);
+    if !inside.wards.is_empty() {
+        let names: Vec<&str> = inside.wards.iter().map(|w| w.name.as_str()).collect();
+        line(format!("its wards: {}", names.join(", ")));
+    }
+    if !inside.trades.is_empty() {
+        let top: Vec<String> = inside
+            .trades
+            .iter()
+            .take(5)
+            .map(|t| format!("{} {}", t.count, t.name))
+            .collect();
+        line(format!("among its trades: {}", top.join(", ")));
+    }
+    for n in inside.notables.iter().take(5) {
+        line(format!("{}, {} — aged {}", n.name, n.role, n.age));
+    }
+
     // Era demographics (Medieval profile, TinyMUX.WorldMaker).
     line("era: pre-industrial. Life expectancy ~33 at birth (mid-40s if \
           childhood is survived); roughly a fifth of infants do not live a \

@@ -387,7 +387,7 @@ const P_ONSETS: [&str; 20] = [
 const P_MALE_ENDS: [&str; 8] = ["ric", "mund", "gar", "wald", "helm", "bert", "win", "red"];
 const P_FEMALE_ENDS: [&str; 8] = ["a", "wyn", "ith", "gard", "run", "eth", "ild", "is"];
 
-fn person_name(h: u64, female: bool) -> String {
+pub(crate) fn person_name(h: u64, female: bool) -> String {
     let onset = P_ONSETS[(h % P_ONSETS.len() as u64) as usize];
     let ends = if female { P_FEMALE_ENDS } else { P_MALE_ENDS };
     format!("{onset}{}", ends[((h >> 16) % ends.len() as u64) as usize])

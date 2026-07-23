@@ -9,6 +9,7 @@
 pub mod civilization;
 pub mod history;
 pub mod hydrology;
+pub mod interior;
 
 use std::sync::OnceLock;
 
@@ -19,10 +20,11 @@ use world_core::noise::{fbm, ridged};
 pub use civilization::{river_name, Civilization, Road, Settlement, SettlementKind};
 pub use history::{History, RealmHistory, Ruler, PRESENT_YEAR};
 pub use hydrology::{Hydrology, RiverEdge};
+pub use interior::{interior, Interior};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 10;
+pub const GEN_VERSION: u32 = 11;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -729,6 +731,58 @@ mod tests {
         for (x, y) in ha.annals.iter().zip(&hb.annals) {
             assert_eq!((x.year, &x.text), (y.year, &y.text));
         }
+    }
+
+    #[test]
+    fn interiors_are_deterministic_and_scale_with_population() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let city = civ
+            .settlements
+            .iter()
+            .position(|s| s.capital && s.port && s.population > 5000)
+            .expect("a big port city");
+        let village = civ
+            .settlements
+            .iter()
+            .position(|s| s.kind == SettlementKind::Village)
+            .expect("a village");
+
+        let a = interior(planet, city);
+        let b = interior(planet, city);
+        assert_eq!(
+            a.notables.iter().map(|n| (&n.name, &n.role, n.age)).collect::<Vec<_>>(),
+            b.notables.iter().map(|n| (&n.name, &n.role, n.age)).collect::<Vec<_>>(),
+            "interiors must be pure functions of the world"
+        );
+
+        let s = &civ.settlements[city];
+        // Isolation's support values: one shoemaker per 150 souls (±1 marginal).
+        let shoemakers = a.trades.iter().find(|t| t.name == "shoemakers").unwrap();
+        let expected = s.population / 150;
+        assert!(
+            (shoemakers.count as i64 - expected as i64).abs() <= 1,
+            "{} shoemakers for {} souls",
+            shoemakers.count,
+            s.population
+        );
+        assert!(
+            a.wards.iter().any(|w| w.kind == "patriciate"),
+            "a city of {} must have a patriciate ward",
+            s.population
+        );
+        assert!(a.notables.iter().any(|n| n.role == "harbormaster"));
+        assert!(a.notables.iter().any(|n| n.role == "castellan of the seat"));
+        assert!(a.notables.iter().all(|n| (24..=70).contains(&n.age)));
+
+        let v = interior(planet, village);
+        assert!(v.wards.is_empty(), "villages have no wards");
+        assert!(v.notables.iter().any(|n| n.role == "reeve"));
+        assert!(
+            v.trades.iter().map(|t| t.count).sum::<u32>()
+                < a.trades.iter().map(|t| t.count).sum::<u32>(),
+            "a village cannot out-trade a city"
+        );
     }
 
     #[test]
