@@ -5,6 +5,7 @@ members = [
     "crates/world-gen",
     "crates/world-tiles",
     "crates/world-server",
+    "lore",
 ]
 
 [workspace.package]

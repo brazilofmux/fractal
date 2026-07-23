@@ -12,10 +12,32 @@
       color: #cdd6e4; font: 12px/1.4 ui-monospace, monospace;
       background: rgba(8, 12, 20, 0.7); padding: 6px 10px; border-radius: 6px;
     }
+    #lore {
+      position: absolute; top: 10px; right: 48px; z-index: 2; width: 340px;
+      max-height: calc(100% - 40px); overflow-y: auto; display: none;
+      color: #ded7c4; background: rgba(12, 14, 22, 0.92);
+      border: 1px solid #2a3040; border-radius: 8px; padding: 14px 16px;
+      font: 13px/1.55 Georgia, 'Times New Roman', serif;
+    }
+    #lore h3 { margin: 0 0 2px; font-size: 16px; color: #f0e9d8; }
+    #lore .meta { font: 11px ui-monospace, monospace; color: #8b94a6; margin-bottom: 8px; }
+    #lore .meta a { color: #7fb0d8; cursor: pointer; text-decoration: underline dotted; }
+    #lore .body { white-space: pre-wrap; }
+    #lore .quiet { color: #8b94a6; font-style: italic; }
+    #lore #lore-close {
+      position: absolute; top: 8px; right: 10px; cursor: pointer;
+      color: #8b94a6; font: 14px ui-monospace, monospace;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div id="lore">
+    <span id="lore-close" title="close">✕</span>
+    <h3 id="lore-title"></h3>
+    <div class="meta" id="lore-meta"></div>
+    <div class="body" id="lore-body"></div>
+  </div>
   <div id="hud">
     <span id="pos">fractal</span>
     <select id="overlay" style="margin-left:10px;background:#141a26;color:#cdd6e4;border:1px solid #333;border-radius:4px">
@@ -143,11 +165,60 @@
       document.getElementById('pos').textContent =
         `fractal · z${map.getZoom().toFixed(1)} · ${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}`;
     });
+    // --- Lore panel -----------------------------------------------------
+    const panel = document.getElementById('lore');
+    const el = (id) => document.getElementById(id);
+    let loreToken = 0; // invalidates in-flight polls when selection changes
+
+    function showLore(id, title, subtitle) {
+      const token = ++loreToken;
+      panel.style.display = 'block';
+      el('lore-title').textContent = title;
+      el('lore-meta').textContent = subtitle || '';
+      el('lore-body').innerHTML = '<span class="quiet">The chronicler is consulted…</span>';
+      pollLore(id, token, title);
+    }
+
+    async function pollLore(id, token, title) {
+      let r;
+      try {
+        r = await (await fetch(`/lore/${id}`)).json();
+      } catch {
+        r = { status: 'failed', message: 'the server did not answer' };
+      }
+      if (token !== loreToken) return; // user moved on
+      if (r.status === 'generating') {
+        el('lore-body').innerHTML = '<span class="quiet">The chronicler is writing…</span>';
+        setTimeout(() => pollLore(id, token, title), 2500);
+        return;
+      }
+      if (r.status === 'ready') {
+        el('lore-title').textContent = r.name;
+        el('lore-body').textContent = r.body;
+        const meta = el('lore-meta');
+        meta.textContent = '';
+        if (r.realm && r.realm.id) {
+          const a = document.createElement('a');
+          a.textContent = `chronicle of the ${r.realm.name}`;
+          a.onclick = () => showLore(r.realm.id, r.realm.name, '');
+          meta.append(a);
+        }
+        return;
+      }
+      el('lore-body').innerHTML = `<span class="quiet">${
+        r.status === 'disabled' ? r.hint : (r.message || 'the page is missing') + ' — click the settlement to retry'
+      }</span>`;
+    }
+
+    el('lore-close').onclick = () => { panel.style.display = 'none'; loreToken++; };
+
     map.on('click', 'settlement-dots', (e) => {
       const f = e.features[0].properties;
       const kind = { 1: 'city', 2: 'town', 3: 'village' }[f.rank] || '?';
       document.getElementById('pos').textContent =
-        `${f.name} — ${f.port ? 'port ' : ''}${kind}, realm of ${f.realm}`;
+        `${f.name} — ${f.port ? 'port ' : ''}${kind}, pop. ~${f.pop}, realm of ${f.realm}`;
+      showLore(`s${f.cell}`, f.name,
+        `${f.port ? 'port ' : ''}${kind} · pop. ~${f.pop} · realm of ${f.realm}`);
     });
     map.on('mouseenter', 'settlement-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'settlement-dots', () => { map.getCanvas().style.cursor = ''; });

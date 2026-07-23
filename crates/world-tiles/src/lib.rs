@@ -274,6 +274,9 @@ pub fn render_settlements_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u
                 ("port", mvt::Value::Int(s.port as i64)),
                 ("capital", mvt::Value::Int(s.capital as i64)),
                 ("realm", mvt::Value::Str(s.realm.clone())),
+                // Feature identity + texture for the lore panel.
+                ("cell", mvt::Value::Int(s.cell as i64)),
+                ("pop", mvt::Value::Int(s.population as i64)),
             ],
         );
     }

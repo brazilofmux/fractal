@@ -53,11 +53,18 @@ pub struct Settlement {
     pub name: String,
     /// Name of the nearest city — the realm this settlement belongs to.
     pub realm: String,
+    /// Cell of that city, the realm's stable identity.
+    pub realm_capital: u32,
+    /// Deterministic head count, scaled to kind and fortune.
+    pub population: u32,
 }
 
 pub struct Road {
     /// 1 = between cities, 2 = town link, 3 = village link.
     pub tier: u8,
+    /// Indices into `settlements` of the two endpoints.
+    pub a: u32,
+    pub b: u32,
     pub pts: Vec<[f64; 3]>,
 }
 
@@ -181,29 +188,43 @@ impl Civilization {
                     h.is_river(c as usize),
                     &mut used_names,
                 );
+                // Population: kind sets the scale, a positional hash the
+                // fortune, and a working port swells it by a quarter.
+                let (base, span) = match kind {
+                    SettlementKind::City => (8000u32, 20000u64),
+                    SettlementKind::Town => (1000, 4000),
+                    SettlementKind::Village => (120, 700),
+                };
+                let mut population = base + (hash3(seed, c as i64, 200, 0) % span) as u32;
+                let port = hb && coast[c as usize];
+                if port {
+                    population += population / 4;
+                }
                 Settlement {
                     cell: c,
                     pos,
                     kind,
-                    port: hb && coast[c as usize],
+                    port,
                     capital: kind == SettlementKind::City,
                     name,
                     realm: String::new(),
+                    realm_capital: 0,
+                    population,
                 }
             })
             .collect();
-        let cities: Vec<(usize, [f64; 3], String)> = settlements
+        let cities: Vec<(u32, [f64; 3], String)> = settlements
             .iter()
-            .enumerate()
-            .filter(|(_, s)| s.kind == SettlementKind::City)
-            .map(|(i, s)| (i, s.pos, s.name.clone()))
+            .filter(|s| s.kind == SettlementKind::City)
+            .map(|s| (s.cell, s.pos, s.name.clone()))
             .collect();
         for s in &mut settlements {
-            let (_, _, realm) = cities
+            let (capital, _, realm) = cities
                 .iter()
                 .min_by(|a, b| chord(s.pos, a.1).total_cmp(&chord(s.pos, b.1)))
                 .expect("at least one city");
             s.realm = realm.clone();
+            s.realm_capital = *capital;
         }
 
         // ---- Roads: least-cost paths between neighbors --------------------
@@ -244,12 +265,30 @@ impl Civilization {
                 }
                 pts.push(settlements[j].pos);
                 let pts = chaikin(&chaikin(&pts));
-                roads.push(Road { tier, pts });
+                roads.push(Road {
+                    tier,
+                    a: i as u32,
+                    b: j as u32,
+                    pts,
+                });
             }
         }
 
         Self { settlements, roads }
     }
+}
+
+/// Deterministic name of the river system that drains `cell`, if any. Every
+/// settlement along one drainage shares the name, because the name hangs off
+/// the river's mouth — the one cell the whole system agrees on.
+pub fn river_name(planet_seed: u64, h: &Hydrology, cell: u32) -> Option<String> {
+    h.river_class(cell)?;
+    let mouth = h.river_mouth(cell)?;
+    let seed = splitmix64(planet_seed ^ STAGE_CIV ^ 0x51E5);
+    Some(format!(
+        "River {}",
+        gen_name(hash3(seed, mouth as i64, 300, 0), false, false)
+    ))
 }
 
 /// A* over the land grid. Cost is distance times a terrain factor: slopes

@@ -1,0 +1,11 @@
+[package]
+name = "lore"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+world-core = { path = "../crates/world-core" }
+world-gen = { path = "../crates/world-gen" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }

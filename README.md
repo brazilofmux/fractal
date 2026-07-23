@@ -11,7 +11,7 @@ hand-authoring wall.
 
 See [PLAN.md](PLAN.md) for the full design and phase roadmap.
 
-## Status: Phase 5
+## Status: Phase 6
 
 Seeded planet served as standard Web Mercator XYZ raster tiles and rendered in
 the browser on a MapLibre globe. Tiles are hillshaded (seam-free by
@@ -56,6 +56,22 @@ and roads ship as vector tiles (`/tiles/settlements/…`,
 `/tiles/roads/…`); the viewer labels them, and clicking a settlement
 shows its name, kind and realm (allegiance to the nearest city).
 
+And the world tells stories: every settlement and realm has a stable
+feature id, and the first time one is clicked, the lore engine assembles
+its deterministic context — biome, climate, its river's name, its
+neighbors with distances and bearings, era-true medieval demographics
+(population, households, mortality; the demographic model follows
+TinyMUX.WorldMaker) — and asks Claude to write its atlas entry. Realm
+chronicles are written before the entries of their towns, so fiction
+nests the way terrain does; everything is cached in SQLite
+(`lore.sqlite`) keyed by seed and generator version — the cache is the
+canon. Lore is additive: without credentials the world runs fully
+offline and the panel says so.
+
+To enable lore, start the server with `ANTHROPIC_API_KEY` set (or an
+`ant auth login` profile). The model defaults to `claude-opus-4-8`;
+override with `LORE_MODEL`.
+
 ## Run it
 
 ```sh
@@ -74,5 +90,6 @@ XYZ tile layer.
 - `crates/world-core` — positional hashing, gradient noise, sphere/Mercator geometry, cube-sphere grid
 - `crates/world-gen` — the generation pipeline: tectonics → elevation → climate → hydrology → civilization
 - `crates/world-tiles` — per-pixel tile rendering, hypsometric tint, PNG encoding, MVT encoding
-- `crates/world-server` — axum HTTP tile server
-- `web/` — MapLibre GL globe viewer
+- `crates/world-server` — axum HTTP tile + lore server
+- `lore/` — the lore engine: feature ids, context assembly, Claude API, SQLite canon
+- `web/` — MapLibre GL globe viewer with the lore panel

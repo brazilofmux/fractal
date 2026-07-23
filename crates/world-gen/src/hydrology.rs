@@ -284,6 +284,29 @@ impl Hydrology {
         node_pos(self.seed, &self.grid, c)
     }
 
+    /// Discharge class 1..=6 if this cell carries a river.
+    pub fn river_class(&self, cell: u32) -> Option<u8> {
+        let c = cell as usize;
+        self.is_river(c)
+            .then(|| (1.0 + (self.acc[c] / self.threshold).log2()).clamp(1.0, 6.0) as u8)
+    }
+
+    /// Follow the drainage to the sea. The ocean cell reached identifies the
+    /// whole river system — a stable anchor for naming it.
+    pub fn river_mouth(&self, cell: u32) -> Option<u32> {
+        let mut c = cell as usize;
+        let mut steps = 0;
+        while !self.ocean[c] {
+            let d = self.down[c];
+            if d == u32::MAX || steps > self.down.len() {
+                return None;
+            }
+            c = d as usize;
+            steps += 1;
+        }
+        Some(c as u32)
+    }
+
     pub fn rivers(&self) -> &[RiverEdge] {
         &self.rivers
     }

@@ -6,15 +6,17 @@ use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
+use serde_json::json;
 use tower_http::services::ServeDir;
 use world_gen::{Planet, GEN_VERSION};
 
 const MAX_ZOOM: u32 = 24;
 
 struct App {
-    planet: Planet,
+    planet: Arc<Planet>,
     cache_dir: PathBuf,
+    lore: Arc<lore::LoreEngine>,
 }
 
 #[tokio::main]
@@ -28,9 +30,23 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("cache"));
 
+    let lore = lore::LoreEngine::open(std::path::Path::new("lore.sqlite"), seed, GEN_VERSION)
+        .expect("open lore cache");
+    println!(
+        "lore: {} · {} entries in canon · model {}",
+        if lore.enabled() {
+            "enabled"
+        } else {
+            "disabled (no ANTHROPIC_API_KEY / ant profile)"
+        },
+        lore.entries_written(),
+        lore.model,
+    );
+
     let app = Arc::new(App {
-        planet: Planet::new(seed),
+        planet: Arc::new(Planet::new(seed)),
         cache_dir,
+        lore: Arc::new(lore),
     });
 
     // Solve the global drainage graph before serving: every tile at every
@@ -58,6 +74,7 @@ async fn main() {
 
     let router = Router::new()
         .route("/tiles/{layer}/{z}/{x}/{y}", get(tile))
+        .route("/lore/{id}", get(lore_entry))
         .fallback_service(ServeDir::new("web"))
         .with_state(app.clone());
 
@@ -123,6 +140,30 @@ async fn tile(
 
     write_cache(&path, &body).await;
     tile_response(body, mime)
+}
+
+/// Lore endpoint: cached canon returns immediately; unwritten entries start
+/// generating in the background and the client polls until ready.
+async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
+    let planet = app.planet.clone();
+    let engine = app.lore.clone();
+    let status = tokio::task::spawn_blocking(move || engine.request(&planet, &id))
+        .await
+        .expect("lore task");
+
+    let body = match status {
+        lore::LoreStatus::Ready { name, body, realm } => json!({
+            "status": "ready", "name": name, "body": body,
+            "realm": realm.map(|(id, name)| json!({"id": id, "name": name})),
+        }),
+        lore::LoreStatus::Generating => json!({"status": "generating"}),
+        lore::LoreStatus::Disabled { hint } => json!({"status": "disabled", "hint": hint}),
+        lore::LoreStatus::Failed { message } => json!({"status": "failed", "message": message}),
+        lore::LoreStatus::NotFound => {
+            return (StatusCode::NOT_FOUND, "no such feature").into_response()
+        }
+    };
+    Json(body).into_response()
 }
 
 /// Best-effort atomic cache write: unique temp name, then rename, so a
