@@ -81,6 +81,7 @@ fn main() {
                 bytes.extend(world_tiles::render_settlements_tile(&planet, z, x, y));
                 bytes.extend(world_tiles::render_labels_tile(&planet, z, x, y));
                 bytes.extend(world_tiles::render_lanes_tile(&planet, z, x, y));
+                bytes.extend(world_tiles::render_city_tile(&planet, z, x, y));
                 (tile_id(z, x, y), bytes)
             })
             .collect();
@@ -92,7 +93,7 @@ fn main() {
     }
     let path = std::path::PathBuf::from(format!("world-s{seed}-features.pmtiles"));
     let meta = format!(
-        r#"{{"name":"fractal seed {seed} (features)","vector_layers":[{{"id":"rivers","fields":{{"w":"Number","name":"String"}}}},{{"id":"roads","fields":{{"tier":"Number"}}}},{{"id":"settlements","fields":{{"name":"String","rank":"Number","port":"Number","capital":"Number","realm":"String","cell":"Number","pop":"Number"}}}},{{"id":"labels","fields":{{"name":"String","kind":"String","id":"String"}}}},{{"id":"lanes","fields":{{"goods":"String","flow":"Number"}}}}]}}"#
+        r#"{{"name":"fractal seed {seed} (features)","vector_layers":[{{"id":"rivers","fields":{{"w":"Number","name":"String"}}}},{{"id":"roads","fields":{{"tier":"Number"}}}},{{"id":"settlements","fields":{{"name":"String","rank":"Number","port":"Number","capital":"Number","realm":"String","cell":"Number","pop":"Number"}}}},{{"id":"labels","fields":{{"name":"String","kind":"String","id":"String"}}}},{{"id":"lanes","fields":{{"goods":"String","flow":"Number"}}}},{{"id":"city","fields":{{"name":"String","kind":"String","id":"String","cell":"Number","k":"Number"}}}}]}}"#
     );
     let (addressed, contents, size) = vector
         .finish(&path, TileType::MVT, 0, vector_max as u8, &meta)

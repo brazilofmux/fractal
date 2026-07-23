@@ -131,6 +131,12 @@
             tiles: [location.origin + '/tiles/lanes/{z}/{x}/{y}.mvt'],
             maxzoom: 10,
           },
+          city: {
+            type: 'vector',
+            tiles: [location.origin + '/tiles/city/{z}/{x}/{y}.mvt'],
+            minzoom: 13,
+            maxzoom: 16,
+          },
         },
         layers: [
           { id: 'space', type: 'background', paint: { 'background-color': '#01010a' } },
@@ -172,6 +178,7 @@
           },
           {
             id: 'settlement-dots', type: 'circle', source: 'settlements', 'source-layer': 'settlements',
+            maxzoom: 14,
             paint: {
               'circle-radius': ['+', 6.5, ['*', -1.5, ['get', 'rank']]],
               'circle-color': ['case', ['==', ['get', 'port'], 1], '#7fd4d4', '#f0e6d2'],
@@ -216,7 +223,24 @@
             },
           })),
           {
+            id: 'ward-names', type: 'symbol', source: 'city', 'source-layer': 'city',
+            minzoom: 13.5,
+            layout: {
+              'text-field': ['get', 'name'],
+              'text-font': ['Open Sans Semibold'],
+              'text-size': ['match', ['get', 'kind'], 'inn', 10, 'gate', 9.5, 11],
+              'text-max-width': 7,
+            },
+            paint: {
+              'text-color': ['match', ['get', 'kind'],
+                'inn', '#e8c88a', 'gate', '#b8ab90', 'harborside', '#8fc3d8',
+                'green', '#a8c890', '#d8cfb8'],
+              'text-halo-color': '#0c1018', 'text-halo-width': 1.2,
+            },
+          },
+          {
             id: 'settlement-names', type: 'symbol', source: 'settlements', 'source-layer': 'settlements',
+            maxzoom: 14,
             layout: {
               'text-field': ['get', 'name'],
               'text-font': ['Open Sans Semibold'],
@@ -315,6 +339,13 @@
           a.onclick = () => showLore(r.realm.id, r.realm.name, '');
           meta.append(a);
         }
+        if (r.enter) {
+          const w = document.createElement('a');
+          w.textContent = 'walk its streets';
+          w.style.marginLeft = meta.childNodes.length ? '10px' : '0';
+          w.onclick = () => showRoom(r.enter.cell, r.enter.k);
+          meta.append(w);
+        }
         return;
       }
       el('lore-body').innerHTML = `<span class="quiet">${
@@ -323,6 +354,83 @@
     }
 
     el('lore-close').onclick = () => { panel.style.display = 'none'; loreToken++; };
+
+    // --- The walk: street level as text -----------------------------------
+    // Each room is a ward (or the inn); the chronicler narrates it in the
+    // second person, the generator supplies who is here and where you can
+    // go. Exits are links: the whole city can be walked without leaving text.
+    async function showRoom(cell, k) {
+      const token = ++loreToken;
+      panel.style.display = 'block';
+      el('lore-title').textContent = '…';
+      el('lore-meta').textContent = '';
+      el('lore-body').innerHTML = '<span class="quiet">You get your bearings…</span>';
+      el('lore-annals').style.display = 'none';
+      let r;
+      try {
+        const resp = await fetch(`/room/${cell}/${k}`);
+        if (!resp.ok) throw new Error();
+        r = await resp.json();
+      } catch {
+        if (token === loreToken)
+          el('lore-body').innerHTML = '<span class="quiet">No way through — is the server running?</span>';
+        return;
+      }
+      if (token !== loreToken) return;
+      el('lore-title').textContent = r.name;
+      const meta = el('lore-meta');
+      meta.textContent = '';
+      const back = document.createElement('a');
+      back.textContent = `↑ ${r.city}`;
+      back.onclick = () => showLore(r.city_id, r.city, '');
+      meta.append(back);
+
+      // People and exits render immediately; the prose arrives when written.
+      const a = el('lore-annals');
+      a.innerHTML = '';
+      for (const p of r.people || []) {
+        const d = document.createElement('div');
+        d.className = 'person';
+        d.textContent = p.text;
+        d.onclick = () => showLore(p.id, p.text.split(' — ')[0], p.text.split(' — ')[1] || '');
+        a.append(d);
+      }
+      for (const e of r.exits || []) {
+        const d = document.createElement('div');
+        d.className = 'person';
+        d.textContent = `→ ${e.name}`;
+        d.onclick = () => showRoom(cell, e.k);
+        a.append(d);
+      }
+      a.style.display = 'block';
+      pollRoomLore(r.lore_id, token);
+    }
+
+    async function pollRoomLore(id, token, misses = 0) {
+      let r;
+      try {
+        const resp = await fetch(`/lore/${id}`);
+        r = resp.ok ? await resp.json() : { status: 'failed', message: `no entry (${resp.status})` };
+      } catch {
+        if (misses < 5) {
+          setTimeout(() => pollRoomLore(id, token, misses + 1), 2000);
+          return;
+        }
+        r = { status: 'failed', message: 'the server is not answering' };
+      }
+      if (token !== loreToken) return;
+      if (r.status === 'generating') {
+        el('lore-body').innerHTML = '<span class="quiet">You take the place in…</span>';
+        setTimeout(() => pollRoomLore(id, token), 2500);
+        return;
+      }
+      if (r.status === 'ready') {
+        el('lore-body').textContent = r.body;
+        return;
+      }
+      el('lore-body').innerHTML =
+        `<span class="quiet">${r.status === 'disabled' ? r.hint : (r.message || 'nothing to see')}</span>`;
+    }
 
     map.on('click', 'settlement-dots', (e) => {
       const f = e.features[0].properties;
@@ -359,6 +467,13 @@
         ? `Ships work this water with ${f.goods}.`
         : 'A quiet crossing.';
     });
+    // Ward and inn labels open the walk at that spot.
+    map.on('click', 'ward-names', (e) => {
+      const f = e.features[0].properties;
+      if (f.id) showRoom(f.cell, f.k);
+    });
+    map.on('mouseenter', 'ward-names', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'ward-names', () => { map.getCanvas().style.cursor = ''; });
     for (const layer of ['nature-names-along', 'nature-names-at']) {
       map.on('click', layer, (e) => {
         const f = e.features[0].properties;

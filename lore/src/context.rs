@@ -33,10 +33,13 @@ pub enum FeatureRef {
     Natural(usize),
     /// A person: (settlement cell, person slot).
     Person(u32, u8),
+    /// A room of a settlement's walk: (settlement cell, room index).
+    Room(u32, u8),
 }
 
 /// Parse a feature id: `s{cell}` for a settlement, `r{cell}` for the realm
-/// whose capital sits on that cell, `n{index}` for a natural feature.
+/// whose capital sits on that cell, `n{index}` for a natural feature,
+/// `p{cell}x{slot}` for a person, `w{cell}x{k}` for a room.
 pub fn parse_id(planet: &Planet, id: &str) -> Option<FeatureRef> {
     let (kind, rest) = id.split_at(1);
     if kind == "p" {
@@ -44,6 +47,12 @@ pub fn parse_id(planet: &Planet, id: &str) -> Option<FeatureRef> {
         let (cell, slot) = (cell.parse().ok()?, slot.parse().ok()?);
         return world_gen::person_at(planet, cell, slot)
             .map(|_| FeatureRef::Person(cell, slot));
+    }
+    if kind == "w" {
+        let (cell, k) = rest.split_once('x')?;
+        let (cell, k): (u32, u8) = (cell.parse().ok()?, k.parse().ok()?);
+        return world_gen::citymap::room_at(planet, cell, k as usize)
+            .map(|_| FeatureRef::Room(cell, k));
     }
     let num: u32 = rest.parse().ok()?;
     let civ = planet.civilization();
@@ -72,6 +81,9 @@ pub fn feature_name(planet: &Planet, fref: FeatureRef) -> String {
         FeatureRef::Natural(i) => planet.geography().features[i].name.clone(),
         FeatureRef::Person(cell, slot) => world_gen::person_at(planet, cell, slot)
             .map(|h| h.name)
+            .unwrap_or_default(),
+        FeatureRef::Room(cell, k) => world_gen::citymap::room_at(planet, cell, k as usize)
+            .map(|(_, r)| r.name)
             .unwrap_or_default(),
     }
 }
@@ -107,6 +119,7 @@ pub fn realm_of(planet: &Planet, fref: FeatureRef) -> Option<(String, String)> {
             let head = world_gen::person_at(planet, cell, slot)?;
             &civ.settlements[head.settlement_index]
         }
+        FeatureRef::Room(cell, _) => civ.settlements.iter().find(|s| s.cell == cell)?,
         FeatureRef::Natural(_) => return None,
     };
     Some((format!("r{}", s.realm_capital), format!("Realm of {}", s.realm)))
@@ -191,6 +204,28 @@ pub fn prompt_for(planet: &Planet, fref: FeatureRef, realm_body: Option<&str>, y
                 f.kind.word(),
                 natural_facts(planet, i),
             )
+        }
+        FeatureRef::Room(cell, k) => {
+            let (i, room) = world_gen::citymap::room_at(planet, cell, k as usize)
+                .expect("room parsed, so it resolves");
+            let mut p = format!(
+                "Write the street-level view (60-110 words) from {}, {} of the \
+                 {} of {}. For this entry only, write in the second person, \
+                 present tense — the reader stands there now, seeing and \
+                 hearing the place. Name at most one of the people below in \
+                 passing, doing something ordinary. No greetings, no \
+                 addresses to the reader, no purple prose.\n\nCanon facts:\n{}",
+                room.name,
+                ward_phrase(&room.kind),
+                kind_word(&planet.civilization().settlements[i]),
+                planet.civilization().settlements[i].name,
+                room_facts(planet, i, cell, k as usize),
+            );
+            if let Some(town) = realm_body {
+                p.push_str("\n\nThe atlas entry of its town (canon, do not contradict):\n");
+                p.push_str(town);
+            }
+            p
         }
         FeatureRef::Person(cell, slot) => {
             let (head, lines) = world_gen::household_lines(planet, cell, slot)
@@ -607,6 +642,121 @@ fn realm_facts(planet: &Planet, capital: usize) -> String {
             line(&mut f, format!("Year {} — {}", a.year, a.text));
         }
     }
+    f
+}
+
+fn ward_phrase(kind: &str) -> &'static str {
+    match kind {
+        "market" => "the market ward",
+        "military" => "the castle ward",
+        "odoriferous businesses" => "the ward of the stinking trades",
+        "craftsmen" => "a craftsmen's ward",
+        "harborside" => "the harborside",
+        "riverside" => "the riverside ward",
+        "patriciate" => "the patricians' ward",
+        "merchant" => "a merchants' ward",
+        "administration" => "the ward of courts and scriveners",
+        "gate" => "a gate ward",
+        "slum" => "the poorest ward",
+        "green" => "the village green",
+        "lane" => "the village lane",
+        "church" => "the church end",
+        "inn" => "an inn",
+        _ => "a ward",
+    }
+}
+
+/// The street's brief: where the reader stands, who is in sight, what the
+/// town around them is — all generator truth, so the second-person prose
+/// can never wander off the map.
+fn room_facts(planet: &Planet, i: usize, _cell: u32, k: usize) -> String {
+    let civ = planet.civilization();
+    let s = &civ.settlements[i];
+    let plan = world_gen::citymap::plan(planet, i);
+    let rooms = world_gen::citymap::rooms(&plan);
+    let room = rooms.iter().find(|r| r.k == k).expect("room exists");
+    let (lat, lon) = unit_to_lat_lon(s.pos);
+    let cl = planet.climate(lat, lon);
+    let econ = planet.economy();
+
+    let mut f = String::new();
+    line(
+        &mut f,
+        format!(
+            "{} is {} of {}, a {} of about {} souls in the Realm of {}",
+            room.name,
+            ward_phrase(&room.kind),
+            s.name,
+            kind_word(s),
+            round_pop(s.population),
+            s.realm
+        ),
+    );
+    line(
+        &mut f,
+        format!(
+            "by the standards of the age the town is {}",
+            world_gen::Economy::wealth_word(econ.wealth[i])
+        ),
+    );
+    for (name, role, slot) in world_gen::people_of(planet, i) {
+        if world_gen::citymap::room_of_role(&plan, &role, slot) == k {
+            line(&mut f, format!("in sight here: {name}, {role}"));
+        }
+    }
+    if matches!(
+        room.kind.as_str(),
+        "market" | "craftsmen" | "odoriferous businesses" | "merchant"
+    ) {
+        let inside = world_gen::interior(planet, i);
+        let trades: Vec<String> = inside
+            .trades
+            .iter()
+            .take(4)
+            .map(|t| format!("{} {}", t.count, t.name))
+            .collect();
+        if !trades.is_empty() {
+            line(&mut f, format!("among the town's trades: {}", trades.join(", ")));
+        }
+    }
+    if room.kind == "inn" {
+        line(
+            &mut f,
+            "an inn: hearth and taproom below, beds above, a stable yard behind".into(),
+        );
+    }
+    if room.kind == "harborside" {
+        line(
+            &mut f,
+            "the quay: hulls and cargo and gulls; the sea is the town's living".into(),
+        );
+    }
+    if let Some((inn, host)) = &plan.inn {
+        if *host == k {
+            line(&mut f, format!("{inn} stands in this ward"));
+        }
+    }
+    let ways: Vec<String> = world_gen::citymap::exits(&plan, k)
+        .iter()
+        .filter_map(|&e| rooms.iter().find(|r| r.k == e))
+        .map(|r| r.name.clone())
+        .collect();
+    if !ways.is_empty() {
+        line(&mut f, format!("ways lead on to: {}", ways.join(", ")));
+    }
+    line(
+        &mut f,
+        format!(
+            "climate: mean {:.0} °C, {} rainfall",
+            cl.temp_c,
+            precip_word(cl.precip)
+        ),
+    );
+    line(
+        &mut f,
+        "era: pre-industrial; streets are earth or cobble, the light is daylight or tallow"
+            .into(),
+    );
     f
 }
 

@@ -6,6 +6,7 @@
 //! feeds forward as a hard constraint on fine synthesis. Later stages
 //! (civilization, lore) slot in as further functions of (seed, position).
 
+pub mod citymap;
 pub mod civilization;
 pub mod economy;
 pub mod geography;
@@ -22,6 +23,7 @@ use world_core::geo::lat_lon_to_unit;
 use world_core::hash::{hash3, splitmix64};
 use world_core::noise::{fbm, ridged};
 
+pub use citymap::CityPlan;
 pub use civilization::{river_name, Civilization, Road, Settlement, SettlementKind};
 pub use economy::{Economy, Good, Lane};
 pub use geography::{Geography, NaturalFeature, NaturalKind};
@@ -34,7 +36,12 @@ pub use timeline::{founded_in, population_in, realm_in};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 15;
+pub const GEN_VERSION: u32 = 16;
+
+/// Version of the lore-facing context, kept apart from GEN_VERSION so a
+/// tile-only change does not orphan the written canon. Bump this when the
+/// context assembly or any generator fact feeding it changes meaning.
+pub const LORE_VERSION: u32 = 15;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -1053,6 +1060,148 @@ mod tests {
         // Deterministic.
         let other = Planet::new(42);
         assert_eq!(econ.wealth, other.economy().wealth);
+    }
+
+    #[test]
+    fn street_level_holds_together() {
+        use citymap::GroundKind;
+        let planet = planet();
+        let civ = planet.civilization();
+        let dist = |a: [f64; 3], b: [f64; 3]| {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+        };
+
+        for (i, s) in civ.settlements.iter().enumerate().step_by(5) {
+            let plan = citymap::plan(planet, i);
+            assert_eq!(plan.settlement, i);
+            assert!(plan.radius > 0.0 && plan.radius <= citymap::MAX_RADIUS);
+            assert_eq!(plan.wall.is_some(), s.population > 900, "{}", s.name);
+            // Every interior ward has a seat; even a hamlet can be walked.
+            let inside = interior(planet, i);
+            if inside.wards.is_empty() {
+                assert!(plan.wards.len() >= 2, "{} cannot be walked", s.name);
+            } else {
+                assert_eq!(plan.wards.len(), inside.wards.len());
+            }
+            for w in &plan.wards {
+                assert!(dist(w.pos, plan.center) <= plan.radius * 1.001);
+            }
+            if let Some(wall_r) = plan.wall {
+                assert!(!plan.gates.is_empty(), "{} is walled without gates", s.name);
+                for g in &plan.gates {
+                    assert!((dist(g.pos, plan.center) - wall_r).abs() < wall_r * 0.02);
+                }
+            }
+            // Rooms are one walkable component: everywhere reaches everywhere.
+            let rooms = citymap::rooms(&plan);
+            let mut seen = vec![false; rooms.len()];
+            let mut stack = vec![0usize];
+            seen[0] = true;
+            while let Some(c) = stack.pop() {
+                for e in citymap::exits(&plan, rooms[c].k) {
+                    let j = rooms.iter().position(|r| r.k == e).expect("exit resolves");
+                    if !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+            assert!(
+                seen.iter().all(|&v| v),
+                "{} has rooms no street reaches",
+                s.name
+            );
+            // The town is where the town is — on dry ground.
+            assert!(plan.ground_at(plan.center, 0.1).is_some());
+            {
+                let (lat, lon) = world_core::geo::unit_to_lat_lon(plan.center);
+                assert!(
+                    planet.elevation(lat, lon, 8) > 0.0,
+                    "{} anchors underwater",
+                    s.name
+                );
+            }
+
+            // Deterministic, like everything else.
+            let again = citymap::plan(planet, i);
+            for (a, b) in plan.wards.iter().zip(&again.wards) {
+                assert_eq!((a.name.clone(), a.pos), (b.name.clone(), b.pos));
+            }
+        }
+
+        // Classify a grid over the biggest city: all the anatomy shows.
+        let (big, s) = civ
+            .settlements
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, s)| s.population)
+            .expect("settlements exist");
+        let plan = citymap::plan(planet, big);
+        let (lat0, lon0) = world_core::geo::unit_to_lat_lon(plan.center);
+        let r = plan.radius * 1.2;
+        let mut counts = std::collections::HashMap::new();
+        let mut outside = 0;
+        for j in -40i32..=40 {
+            for i in -40i32..=40 {
+                let lat = lat0 + j as f64 * r / 40.0;
+                let lon = lon0 + i as f64 * r / 40.0 / lat0.cos();
+                let p = lat_lon_to_unit(lat, lon);
+                match plan.ground_at(p, 0.1) {
+                    Some(g) => *counts.entry(g.kind).or_insert(0u32) += 1,
+                    None => outside += 1,
+                }
+            }
+        }
+        for kind in [
+            GroundKind::Plot,
+            GroundKind::Street,
+            GroundKind::Wall,
+            GroundKind::Square,
+        ] {
+            assert!(
+                counts.get(&kind).copied().unwrap_or(0) > 0,
+                "the biggest city has no {kind:?}"
+            );
+        }
+        assert!(
+            counts[&GroundKind::Plot] > counts[&GroundKind::Street],
+            "more street than city"
+        );
+        assert!(outside > 0, "the city must end somewhere");
+
+        // The milestone, taken literally: in some port town, walk from the
+        // harborside to the inn without leaving the street graph.
+        let mut walked = false;
+        for (i, _) in civ.settlements.iter().enumerate() {
+            let plan = citymap::plan(planet, i);
+            let Some(quay) = plan.wards.iter().position(|w| w.kind == "harborside") else {
+                continue;
+            };
+            let Some((_, _)) = &plan.inn else { continue };
+            let inn_k = plan.wards.len();
+            // BFS from the quay to the inn's door.
+            let rooms = citymap::rooms(&plan);
+            let mut seen = vec![false; rooms.len()];
+            let mut queue = std::collections::VecDeque::from([quay]);
+            seen[quay] = true;
+            while let Some(c) = queue.pop_front() {
+                if rooms[c].k == inn_k {
+                    walked = true;
+                    break;
+                }
+                for e in citymap::exits(&plan, rooms[c].k) {
+                    let j = rooms.iter().position(|r| r.k == e).unwrap();
+                    if !seen[j] {
+                        seen[j] = true;
+                        queue.push_back(j);
+                    }
+                }
+            }
+            if walked {
+                break;
+            }
+        }
+        assert!(walked, "no port town can walk from its quay to its inn");
     }
 
     #[test]

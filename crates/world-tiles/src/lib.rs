@@ -9,7 +9,9 @@ pub mod pmtiles;
 
 use image::ImageEncoder;
 use rayon::prelude::*;
-use world_core::geo::{tile_pixel_to_lat_lon, unit_to_lat_lon};
+use world_core::geo::{lat_lon_to_unit, tile_pixel_to_lat_lon, unit_to_lat_lon};
+use world_core::hash::{hash3, splitmix64};
+use world_gen::citymap::{self, CityPlan, GroundKind};
 use world_gen::{classify_biome, Biome, Planet, LAPSE_C};
 
 pub const TILE_SIZE: usize = 256;
@@ -83,6 +85,20 @@ pub fn render_elevation_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8>
 
     let climate = build_climate_grid(planet, z, x, y);
 
+    // Street level: town plans whose footprints touch this tile. Derived
+    // fresh per tile — a plan is a handful of hashes, never stored.
+    let plans: Vec<CityPlan> = if z >= citymap::GROUND_MIN_ZOOM {
+        let frame = TileFrame::new(z, x, y);
+        let civ = planet.civilization();
+        (0..civ.settlements.len())
+            .filter(|&i| frame.near(civ.settlements[i].pos, citymap::SNAP_MARGIN))
+            .map(|i| citymap::plan(planet, i))
+            .filter(|p| frame.near(p.center, citymap::MAX_RADIUS * 1.2))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     // Elevation grid including a 1-px border. Border samples land outside this
     // tile, but positional determinism makes them bit-identical to the
     // neighboring tile's own samples — so shading is seam-free by construction.
@@ -120,10 +136,10 @@ pub fn render_elevation_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8>
                 // Water surface here, if any: the ocean at 0, or a lake at
                 // its fill level when the terrain dips below it.
                 let (px, py) = (col as f64 + 0.5, row as f64 + 0.5);
+                let (lat, lon) = tile_pixel_to_lat_lon(z, x, y, px, py, TILE_SIZE as f64);
                 let water = if e <= 0.0 {
                     Some(0.0)
                 } else {
-                    let (lat, lon) = tile_pixel_to_lat_lon(z, x, y, px, py, TILE_SIZE as f64);
                     planet.water_level(lat, lon).filter(|&w| e < w - 5e-4)
                 };
 
@@ -135,7 +151,18 @@ pub fn render_elevation_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8>
                 };
 
                 let (t_sea, precip) = climate.sample(px, py);
-                let tint = surface_color(e, water, t_sea, precip);
+                let mut tint = surface_color(e, water, t_sea, precip);
+                // Built ground paints over the wild — but never the water,
+                // so harbors stay wet and rivers keep their beds.
+                if water.is_none() && !plans.is_empty() {
+                    let p = lat_lon_to_unit(lat, lon);
+                    for plan in &plans {
+                        if let Some(g) = plan.ground_at(p, e) {
+                            tint = city_color(planet.seed, plan, g, p);
+                            break;
+                        }
+                    }
+                }
                 let out = &mut buf[col * 3..col * 3 + 3];
                 for ch in 0..3 {
                     out[ch] = (tint[ch] as f64 * intensity).round().min(255.0) as u8;
@@ -313,9 +340,12 @@ pub fn render_settlements_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u
         if s.kind.rank() > max_rank || !frame.near(s.pos, margin) {
             continue;
         }
+        // From street-adjacent zooms the dot stands where the town actually
+        // is — the land-anchored center — not at the cell-scale jitter.
+        let pos = if z >= 10 { citymap::anchor(planet, i) } else { s.pos };
         layer.add(
             i as u64,
-            mvt::Geom::Points(vec![frame.project(s.pos)]),
+            mvt::Geom::Points(vec![frame.project(pos)]),
             &[
                 ("name", mvt::Value::Str(s.name.clone())),
                 ("rank", mvt::Value::Int(s.kind.rank() as i64)),
@@ -390,6 +420,100 @@ pub fn render_lanes_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
                 ("b", mvt::Value::Str(civ.settlements[l.b].name.clone())),
             ],
         );
+    }
+    layer.encode()
+}
+
+/// Street-level palette. Plots resolve into individual roofs on a burgage
+/// grid hashed from world position, so the same house stands in the same
+/// spot on every tile at every zoom without being stored anywhere.
+fn city_color(seed: u64, plan: &CityPlan, g: citymap::Ground, p: [f64; 3]) -> [u8; 3] {
+    match g.kind {
+        GroundKind::Street => [176, 166, 146],
+        GroundKind::Wall => [84, 80, 76],
+        GroundKind::Square => [200, 186, 152],
+        GroundKind::Quay => [130, 106, 80],
+        GroundKind::Green => [110, 138, 82],
+        GroundKind::Plot => {
+            let (u, v) = plan.local(p);
+            let gi = (u / citymap::PLOT_GRID).floor() as i64;
+            let gj = (v / citymap::PLOT_GRID).floor() as i64;
+            let hb = hash3(splitmix64(seed ^ 0xB11D), gi, gj, plan.settlement as i64);
+            if hb % 10 < 6 {
+                // A roof, tinted by its ward and weathered by its hash.
+                let bv = ((hb >> 8) % 30) as f64 - 15.0;
+                let wv = (hash3(seed, plan.settlement as i64, g.ward as i64, 7) % 22) as f64
+                    - 11.0;
+                [
+                    (150.0 + bv + wv).clamp(0.0, 255.0) as u8,
+                    (121.0 + 0.8 * bv + wv).clamp(0.0, 255.0) as u8,
+                    (95.0 + 0.6 * bv + 0.5 * wv).clamp(0.0, 255.0) as u8,
+                ]
+            } else {
+                [166, 151, 121] // yards, middens, garden ground
+            }
+        }
+    }
+}
+
+/// The city layer: ward seats, inns and gates as labeled points from
+/// street zoom. Ward and inn points carry room ids (`w{cell}x{k}`) that
+/// key both the walk endpoint and the chronicler's street-level entries.
+pub fn render_city_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
+    let mut layer = mvt::Layer::new("city");
+    if z < citymap::CITY_LAYER_MIN_ZOOM {
+        return layer.encode();
+    }
+    let civ = planet.civilization();
+    let frame = TileFrame::new(z, x, y);
+    let mut fid = 0u64;
+    for (i, s) in civ.settlements.iter().enumerate() {
+        if !frame.near(s.pos, citymap::SNAP_MARGIN) {
+            continue;
+        }
+        let plan = citymap::plan(planet, i);
+        if !frame.near(plan.center, citymap::MAX_RADIUS * 1.2) {
+            continue;
+        }
+        for (k, w) in plan.wards.iter().enumerate() {
+            layer.add(
+                fid,
+                mvt::Geom::Points(vec![frame.project(w.pos)]),
+                &[
+                    ("name", mvt::Value::Str(w.name.clone())),
+                    ("kind", mvt::Value::Str(w.kind.to_string())),
+                    ("id", mvt::Value::Str(format!("w{}x{k}", s.cell))),
+                    ("cell", mvt::Value::Int(s.cell as i64)),
+                    ("k", mvt::Value::Int(k as i64)),
+                ],
+            );
+            fid += 1;
+        }
+        if let (Some((inn, _)), Some(pos)) = (&plan.inn, plan.inn_pos()) {
+            layer.add(
+                fid,
+                mvt::Geom::Points(vec![frame.project(pos)]),
+                &[
+                    ("name", mvt::Value::Str(inn.clone())),
+                    ("kind", mvt::Value::Str("inn".to_string())),
+                    ("id", mvt::Value::Str(format!("w{}x{}", s.cell, plan.wards.len()))),
+                    ("cell", mvt::Value::Int(s.cell as i64)),
+                    ("k", mvt::Value::Int(plan.wards.len() as i64)),
+                ],
+            );
+            fid += 1;
+        }
+        for g in &plan.gates {
+            layer.add(
+                fid,
+                mvt::Geom::Points(vec![frame.project(g.pos)]),
+                &[
+                    ("name", mvt::Value::Str(g.name.clone())),
+                    ("kind", mvt::Value::Str("gate".to_string())),
+                ],
+            );
+            fid += 1;
+        }
     }
     layer.encode()
 }

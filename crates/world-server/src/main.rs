@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tower_http::services::ServeDir;
 use world_core::geo::unit_to_lat_lon;
-use world_gen::{Planet, GEN_VERSION, PRESENT_YEAR};
+use world_gen::{Planet, GEN_VERSION, LORE_VERSION, PRESENT_YEAR};
 
 const MAX_ZOOM: u32 = 24;
 
@@ -35,7 +35,9 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("cache"));
 
-    let lore = lore::LoreEngine::open(std::path::Path::new("lore.sqlite"), seed, GEN_VERSION)
+    // Canon is keyed by LORE_VERSION, not GEN_VERSION: a tile-only change
+    // must never orphan what the chronicler has already written.
+    let lore = lore::LoreEngine::open(std::path::Path::new("lore.sqlite"), seed, LORE_VERSION)
         .expect("open lore cache");
     println!(
         "lore: {} · {} entries in canon · model {}",
@@ -86,6 +88,7 @@ async fn main() {
         .route("/tiles/{layer}/{z}/{x}/{y}", get(tile))
         .route("/lore/{id}", get(lore_entry))
         .route("/state/{year}", get(state_in))
+        .route("/room/{cell}/{k}", get(room))
         .route("/notes", get(notes_list).post(notes_add))
         .route("/notes/{id}", delete(notes_delete))
         .fallback_service(ServeDir::new("web"))
@@ -114,7 +117,7 @@ async fn tile(
     if !matches!(
         layer.as_str(),
         "elevation" | "plates" | "temperature" | "precipitation" | "rivers" | "settlements"
-            | "roads" | "labels" | "lanes"
+            | "roads" | "labels" | "lanes" | "city"
     )
         || z > MAX_ZOOM
         || x >= (1u32 << z.min(31))
@@ -124,7 +127,7 @@ async fn tile(
     }
     let (ext, mime) = if matches!(
         layer.as_str(),
-        "rivers" | "settlements" | "roads" | "labels" | "lanes"
+        "rivers" | "settlements" | "roads" | "labels" | "lanes" | "city"
     ) {
         ("mvt", "application/x-protobuf")
     } else {
@@ -151,6 +154,7 @@ async fn tile(
         "roads" => world_tiles::render_roads_tile(&render_app.planet, z, x, y),
         "labels" => world_tiles::render_labels_tile(&render_app.planet, z, x, y),
         "lanes" => world_tiles::render_lanes_tile(&render_app.planet, z, x, y),
+        "city" => world_tiles::render_city_tile(&render_app.planet, z, x, y),
         _ => world_tiles::render_elevation_tile(&render_app.planet, z, x, y),
     })
     .await
@@ -304,6 +308,9 @@ async fn lore_entry(
                     json!({ "id": format!("p{cell}x{slot}"), "text": format!("{name} — {role}") })
                 })
                 .collect();
+            // The way in: the walkable town begins at the market or green.
+            let plan = world_gen::citymap::plan(&app.planet, i);
+            body["enter"] = json!({ "cell": cell, "k": plan.entry });
         }
     }
     // A person's household is generator truth: shown instantly.
@@ -359,6 +366,49 @@ async fn state_in(State(app): State<Arc<App>>, Path(year): Path<u32>) -> Respons
     .await
     .expect("state task");
     Json(body).into_response()
+}
+
+/// One room of a settlement's walk: its name and kind, who is in sight,
+/// and where you can go. The narrative itself is `/lore/w{cell}x{k}`.
+async fn room(State(app): State<Arc<App>>, Path((cell, k)): Path<(u32, usize)>) -> Response {
+    let planet = app.planet.clone();
+    let body = tokio::task::spawn_blocking(move || {
+        let civ = planet.civilization();
+        let i = civ.settlements.iter().position(|s| s.cell == cell)?;
+        let s = &civ.settlements[i];
+        let plan = world_gen::citymap::plan(&planet, i);
+        let rooms = world_gen::citymap::rooms(&plan);
+        let r = rooms.iter().find(|r| r.k == k)?;
+        let exits: Vec<serde_json::Value> = world_gen::citymap::exits(&plan, k)
+            .into_iter()
+            .filter_map(|e| rooms.iter().find(|r| r.k == e))
+            .map(|r| json!({ "k": r.k, "name": r.name, "kind": r.kind }))
+            .collect();
+        let people: Vec<serde_json::Value> = world_gen::people_of(&planet, i)
+            .into_iter()
+            .filter(|(_, role, slot)| {
+                world_gen::citymap::room_of_role(&plan, role, *slot) == k
+            })
+            .map(|(name, role, slot)| {
+                json!({ "id": format!("p{cell}x{slot}"), "text": format!("{name} — {role}") })
+            })
+            .collect();
+        Some(json!({
+            "name": r.name,
+            "kind": r.kind,
+            "city": s.name,
+            "city_id": format!("s{cell}"),
+            "lore_id": format!("w{cell}x{k}"),
+            "exits": exits,
+            "people": people,
+        }))
+    })
+    .await
+    .expect("room task");
+    match body {
+        Some(b) => Json(b).into_response(),
+        None => (StatusCode::NOT_FOUND, "no such room").into_response(),
+    }
 }
 
 #[derive(Deserialize)]

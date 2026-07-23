@@ -116,10 +116,12 @@ impl LoreEngine {
         let Some(fref) = parse_id(planet, id) else {
             return LoreStatus::NotFound;
         };
-        // Geography does not move and the living are only known in the
-        // present — those entries are the same in every year.
+        // Geography does not move, and the living — people, streets — are
+        // only known in the present; those entries are the same in every year.
         let year = match fref {
-            FeatureRef::Natural(_) | FeatureRef::Person(..) => PRESENT_YEAR,
+            FeatureRef::Natural(_) | FeatureRef::Person(..) | FeatureRef::Room(..) => {
+                PRESENT_YEAR
+            }
             _ => year.clamp(1, PRESENT_YEAR),
         };
         // A place the year has not yet founded has no entry to write.
@@ -140,7 +142,7 @@ impl LoreEngine {
             _ => {}
         }
         let realm = match fref {
-            FeatureRef::Settlement(_) | FeatureRef::Person(..) => {
+            FeatureRef::Settlement(_) | FeatureRef::Person(..) | FeatureRef::Room(..) => {
                 realm_of_in(planet, fref, year)
             }
             _ => None,
@@ -182,8 +184,9 @@ impl LoreEngine {
         LoreStatus::Generating
     }
 
-    /// Write one feature's entry (realm chronicle first for settlements —
-    /// the realm that held the place in that year, not necessarily today's).
+    /// Write one feature's entry, parents first: a settlement nests in its
+    /// realm's chronicle, a room nests in its settlement's atlas entry —
+    /// fiction refines top-down the way terrain does.
     fn generate(&self, planet: &Planet, id: &str, fref: FeatureRef, year: u32) -> Result<(), String> {
         let realm_body = match fref {
             FeatureRef::Settlement(_) => {
@@ -191,6 +194,7 @@ impl LoreEngine {
                     realm_of_in(planet, fref, year).expect("settlements have realms");
                 Some(self.ensure(planet, &realm_id, year)?)
             }
+            FeatureRef::Room(cell, _) => Some(self.ensure(planet, &format!("s{cell}"), year)?),
             _ => None,
         };
         let writer = self.writer.as_ref().ok_or("lore disabled")?;
@@ -362,6 +366,64 @@ mod tests {
             LoreStatus::Ready { .. }
         ));
         assert_eq!(engine2.entries_written(), 2);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn the_street_narration_nests_inside_its_town() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let i = civ
+            .settlements
+            .iter()
+            .position(|s| s.capital && s.port)
+            .unwrap_or(0);
+        let s = &civ.settlements[i];
+        let plan = world_gen::citymap::plan(&planet, i);
+        let rooms = world_gen::citymap::rooms(&plan);
+        let id = format!("w{}x{}", s.cell, rooms[0].k);
+
+        // The prompt knows the room, the town, and the person it speaks in.
+        let fref = parse_id(&planet, &id).expect("room id parses");
+        let prompt = prompt_for(&planet, fref, None, 500);
+        assert!(prompt.contains(&rooms[0].name));
+        assert!(prompt.contains("second person"));
+        assert!(prompt.contains(s.name.as_str()));
+        assert!(parse_id(&planet, &format!("w{}x99", s.cell)).is_none());
+
+        // Coarse constrains fine: realm chronicle, then town atlas entry,
+        // then the street — three entries, written in that order.
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let writer: Writer = {
+            let order = order.clone();
+            Arc::new(move |_, prompt| {
+                let mut o = order.lock().unwrap();
+                o.push(prompt.to_string());
+                Ok(format!("Entry #{}", o.len()))
+            })
+        };
+        let db = temp_db("street");
+        let engine = Arc::new(LoreEngine::with_writer(&db, planet.seed, 9, writer).unwrap());
+        engine.request(&planet, &id, 500);
+        for _ in 0..100 {
+            if matches!(engine.request(&planet, &id, 500), LoreStatus::Ready { .. }) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(matches!(
+            engine.request(&planet, &id, 500),
+            LoreStatus::Ready { .. }
+        ));
+        let prompts = order.lock().unwrap();
+        assert_eq!(prompts.len(), 3, "realm, town, street");
+        assert!(prompts[0].contains("chronicle"));
+        assert!(prompts[1].contains("atlas entry"));
+        assert!(prompts[2].contains("street-level view"));
+        assert!(
+            prompts[2].contains("Entry #2"),
+            "the street must carry its town's entry as canon"
+        );
         let _ = std::fs::remove_file(&db);
     }
 
