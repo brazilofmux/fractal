@@ -91,9 +91,8 @@ pub fn render_elevation_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8>
         let frame = TileFrame::new(z, x, y);
         let civ = planet.civilization();
         (0..civ.settlements.len())
-            .filter(|&i| frame.near(civ.settlements[i].pos, citymap::SNAP_MARGIN))
+            .filter(|&i| frame.near(civ.settlements[i].pos, citymap::MAX_RADIUS * 1.2))
             .map(|i| citymap::plan(planet, i))
-            .filter(|p| frame.near(p.center, citymap::MAX_RADIUS * 1.2))
             .collect()
     } else {
         Vec::new()
@@ -340,12 +339,9 @@ pub fn render_settlements_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u
         if s.kind.rank() > max_rank || !frame.near(s.pos, margin) {
             continue;
         }
-        // From street-adjacent zooms the dot stands where the town actually
-        // is — the land-anchored center — not at the cell-scale jitter.
-        let pos = if z >= 10 { citymap::anchor(planet, i) } else { s.pos };
         layer.add(
             i as u64,
-            mvt::Geom::Points(vec![frame.project(pos)]),
+            mvt::Geom::Points(vec![frame.project(s.pos)]),
             &[
                 ("name", mvt::Value::Str(s.name.clone())),
                 ("rank", mvt::Value::Int(s.kind.rank() as i64)),
@@ -468,13 +464,10 @@ pub fn render_city_tile(planet: &Planet, z: u32, x: u32, y: u32) -> Vec<u8> {
     let frame = TileFrame::new(z, x, y);
     let mut fid = 0u64;
     for (i, s) in civ.settlements.iter().enumerate() {
-        if !frame.near(s.pos, citymap::SNAP_MARGIN) {
+        if !frame.near(s.pos, citymap::MAX_RADIUS * 1.2) {
             continue;
         }
         let plan = citymap::plan(planet, i);
-        if !frame.near(plan.center, citymap::MAX_RADIUS * 1.2) {
-            continue;
-        }
         for (k, w) in plan.wards.iter().enumerate() {
             layer.add(
                 fid,

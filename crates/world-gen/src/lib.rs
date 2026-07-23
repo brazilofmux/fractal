@@ -36,14 +36,15 @@ pub use timeline::{founded_in, population_in, realm_in};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 17;
+pub const GEN_VERSION: u32 = 18;
 
 /// Version of the lore-facing context, kept apart from GEN_VERSION so a
 /// tile-only change does not orphan the written canon. Bump this when the
 /// context assembly or any generator fact feeding it changes meaning.
 /// (16: honest sea lanes redrew the trade map, and with it every "buys X
-/// from Y" the chronicler had been told.)
-pub const LORE_VERSION: u32 = 16;
+/// from Y" the chronicler had been told. 17: settlements came ashore —
+/// positions, and every distance and bearing derived from them, moved.)
+pub const LORE_VERSION: u32 = 17;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -655,6 +656,16 @@ mod tests {
             assert!(
                 !h.ocean_mask()[c],
                 "settlement {} placed in the ocean",
+                s.name
+            );
+            // Phase 13b: the position itself stands on dry ground — no
+            // port in open water, no river town inside its own channel.
+            let (lat, lon) = world_core::geo::unit_to_lat_lon(s.pos);
+            let e = planet.elevation(lat, lon, 8);
+            assert!(e > 0.0, "{} stands below the waterline", s.name);
+            assert!(
+                !planet.water_level(lat, lon).is_some_and(|w| e < w - 5e-4),
+                "{} stands in flood water",
                 s.name
             );
             assert!(!s.name.is_empty() && names.insert(s.name.clone()), "dup/empty name");

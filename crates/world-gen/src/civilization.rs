@@ -158,13 +158,31 @@ impl Civilization {
                 }
                 let p = h.grid.cell_center(c);
                 // Keep this tier's distance from everything already placed.
-                if placed
+                if !placed
                     .iter()
                     .all(|(_, q, _)| chord(p, *q) >= sep.min(1.99))
                 {
-                    placed.push((c, p, kind));
-                    taken += 1;
+                    continue;
                 }
+                // A settlement needs standing room. Positions are jittered
+                // at cell scale and the cell's own land-call is made at
+                // drainage resolution — a cell can read as land coarse and
+                // drown at full detail (a below-sea basin the raster has
+                // always painted as sea). Walk the position ashore; if no
+                // dry ground stands near, nobody founded anything here.
+                let nominal = if h.is_river(c as usize) {
+                    h.node_position(c)
+                } else {
+                    jitter(seed, &h.grid, c, p)
+                };
+                let Some(pos) = come_ashore(planet, h, c, nominal) else {
+                    continue;
+                };
+                if chord(pos, nominal) > 0.0055 {
+                    continue; // the nearest dry ground is another town's
+                }
+                placed.push((c, pos, kind));
+                taken += 1;
             }
         }
 
@@ -172,14 +190,9 @@ impl Civilization {
         let mut used_names = HashSet::new();
         let mut settlements: Vec<Settlement> = placed
             .iter()
-            .map(|&(c, center, kind)| {
-                // River settlements sit exactly on the drawn river node;
-                // everything else gets its own jitter off the cell center.
-                let pos = if h.is_river(c as usize) {
-                    h.node_position(c)
-                } else {
-                    jitter(seed, &h.grid, c, center)
-                };
+            .map(|&(c, pos, kind)| {
+                // The position was walked ashore at placement — one dry
+                // position for dots, roads, lanes and wards alike.
                 let hb = harbor[c as usize];
                 let name = unique_name(
                     seed,
@@ -343,6 +356,55 @@ fn astar(h: &Hydrology, from: u32, to: u32) -> Option<Vec<u32>> {
                 g.insert(nb, ng);
                 came.insert(nb, c);
                 open.push(Reverse((K(ng + chord(pn, goal)), nb)));
+            }
+        }
+    }
+    None
+}
+
+/// Walk a wet position onto dry ground: first along the line toward (and
+/// past) the cell center — the cell is land, so a position jittered into
+/// open water or a broad lake comes back onto its own ground — then, for
+/// stubborn cases like a river town sitting in its own channel, rings
+/// outward to the nearest dry point. None when no dry ground stands
+/// within reach — the caller treats that as "no settlement here at all".
+/// Deterministic, and cheap for the common case: a position already dry
+/// returns after one sample.
+fn come_ashore(planet: &Planet, h: &Hydrology, cell: u32, pos: [f64; 3]) -> Option<[f64; 3]> {
+    const KM: f64 = 1.0 / 6371.0;
+    let dry = |p: [f64; 3]| {
+        let (lat, lon) = world_core::geo::unit_to_lat_lon(p);
+        let e = planet.elevation(lat, lon, 8);
+        e > 0.003 && !planet.water_level(lat, lon).is_some_and(|w| e < w - 5e-4)
+    };
+    if dry(pos) {
+        return Some(pos);
+    }
+    let target = h.grid.cell_center(cell);
+    for t in 1..=80 {
+        let f = t as f64 / 40.0;
+        let q = normalize([
+            pos[0] + f * (target[0] - pos[0]),
+            pos[1] + f * (target[1] - pos[1]),
+            pos[2] + f * (target[2] - pos[2]),
+        ]);
+        if dry(q) {
+            return Some(q);
+        }
+    }
+    let east = normalize(cross([0.0, 0.0, 1.0], pos));
+    let north = cross(pos, east);
+    for ring in 1..=120 {
+        let r = ring as f64 * 0.25 * KM;
+        for b in 0..16 {
+            let th = b as f64 * std::f64::consts::TAU / 16.0 + 0.13;
+            let q = normalize([
+                pos[0] + r * (th.sin() * east[0] + th.cos() * north[0]),
+                pos[1] + r * (th.sin() * east[1] + th.cos() * north[1]),
+                pos[2] + r * (th.sin() * east[2] + th.cos() * north[2]),
+            ]);
+            if dry(q) {
+                return Some(q);
             }
         }
     }

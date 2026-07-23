@@ -8,7 +8,6 @@
 //! `ground_at` answers per pixel at render time, so the same city exists at
 //! every zoom from orbit down to the cobbles.
 
-use world_core::geo::unit_to_lat_lon;
 use world_core::hash::{hash3, splitmix64};
 
 use crate::{interior, Planet};
@@ -23,10 +22,6 @@ pub const CITY_LAYER_MIN_ZOOM: u32 = 13;
 const KM: f64 = 1.0 / 6371.0;
 /// Cull margin for tile renderers: no city footprint exceeds this.
 pub const MAX_RADIUS: f64 = 1.3 * KM;
-/// How far `anchor` can move a settlement from its nominal position
-/// (bounded by the walk to twice the cell-center distance). Renderers
-/// cull coarsely by this, then precisely by the planned center.
-pub const SNAP_MARGIN: f64 = 0.007;
 
 const STREET_W: f64 = 0.008 * KM;
 const AVENUE_W: f64 = 0.012 * KM;
@@ -90,67 +85,15 @@ pub fn radius_of(population: u32) -> f64 {
     (population as f64 / 28_000.0).sqrt().max(0.09) * KM
 }
 
-/// The settlement's true anchor: its nominal position, walked onto dry
-/// ground. Positions were jittered at cell scale (tens of kilometers) in
-/// Phase 5, when a dot was all they had to be — a port's dot can sit in
-/// open water. Street level needs the shore itself, so the anchor walks
-/// from the nominal position toward the cell center (and past it) until
-/// the ground is dry. Deterministic, and never stored.
-pub fn anchor(planet: &Planet, i: usize) -> [f64; 3] {
-    let civ = planet.civilization();
-    let s = &civ.settlements[i];
-    let dry = |p: [f64; 3]| {
-        let (lat, lon) = unit_to_lat_lon(p);
-        let e = planet.elevation(lat, lon, 8);
-        e > 0.003 && !planet.water_level(lat, lon).is_some_and(|w| e < w - 5e-4)
-    };
-    if dry(s.pos) {
-        return s.pos;
-    }
-    // First choice: walk toward (and past) the settlement's own cell
-    // center — the cell is land, so a position jittered into open water
-    // or a broad lake comes back ashore on its own ground.
-    let target = planet.hydrology().grid.cell_center(s.cell);
-    for t in 1..=80 {
-        let f = t as f64 / 40.0;
-        let q = normalize([
-            s.pos[0] + f * (target[0] - s.pos[0]),
-            s.pos[1] + f * (target[1] - s.pos[1]),
-            s.pos[2] + f * (target[2] - s.pos[2]),
-        ]);
-        if dry(q) {
-            return q;
-        }
-    }
-    // Failing that: rings around the nominal position, nearest dry ground
-    // first — a river town hops just off its channel, a port comes ashore
-    // at the closest beach. 0.25 km steps out to 30 km.
-    let east = normalize(cross([0.0, 0.0, 1.0], s.pos));
-    let north = cross(s.pos, east);
-    for ring in 1..=120 {
-        let r = ring as f64 * 0.25 * KM;
-        for b in 0..16 {
-            let th = b as f64 * std::f64::consts::TAU / 16.0 + 0.13;
-            let q = normalize([
-                s.pos[0] + r * (th.sin() * east[0] + th.cos() * north[0]),
-                s.pos[1] + r * (th.sin() * east[1] + th.cos() * north[1]),
-                s.pos[2] + r * (th.sin() * east[2] + th.cos() * north[2]),
-            ]);
-            if dry(q) {
-                return q;
-            }
-        }
-    }
-    s.pos // a drowned world's problem, not ours; stay deterministic
-}
-
 /// The deterministic town plan of a settlement, derived on demand.
+/// Positions come ashore at placement (Phase 13b), so the settlement's own
+/// position is the plan's center — one anchor for dots, roads and wards.
 pub fn plan(planet: &Planet, i: usize) -> CityPlan {
     let civ = planet.civilization();
     let h = planet.hydrology();
     let s = &civ.settlements[i];
     let seed = splitmix64(planet.seed ^ STAGE_CITY ^ s.cell as u64);
-    let center = anchor(planet, i);
+    let center = s.pos;
     let radius = radius_of(s.population);
     let walled = s.population > 900;
     let wall_r = radius * 0.82;
