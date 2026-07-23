@@ -163,6 +163,38 @@ shipped; each layer reads the ones beneath it and writes none of them.
   who type.
   *Milestone: walk from the Saltwharf to the Gilded Ram without leaving text.*
 
+- **Phase 13 — The honest ledger.** Street level exposed what coarse zooms
+  forgave: geometry and money that were plausible from orbit and wrong up
+  close. Three debts, paid in order:
+  - *13a — Lanes that sail.* Sea lanes are straight port-to-port chords
+    today; some cross continents, and the trade solver prices the voyage as
+    if they could. Route them as least-cost paths over the ocean cells —
+    the water-borne twin of the Phase-5 road A* — hugging coasts the way
+    era shipping did, priced at the distance actually sailed. Trade
+    re-derives itself honestly: the cape adds cost, the strait earns its
+    toll, and some port pair that traded cheaply through a continent
+    discovers the long way round. *Milestone: click a lane and watch it
+    round the cape.*
+  - *13b — Roads that arrive.* Settlement positions were cell-scale
+    jitter; Phase 12 anchored the towns to dry ground but the Phase-5 road
+    polylines still run to the old nominal points — a high road can stop
+    kilometers short of the wall it means to reach, or end at sea. Snap
+    road endpoints to the anchors (and re-check the ford points), so every
+    road at street zoom arrives at a gate. *Milestone: follow any road at
+    z14 and it ends at a town.*
+  - *13c — The manor roll.* Phase 10 promised manor incomes and delivered
+    a flat head-tax straight to the crown. Give every holding of the
+    Phase-7c tenure web an income derived from its land — arable, pasture,
+    woodland, fishery, by biome and climate — of which the holder keeps
+    their share, the liege takes their cut, and the crown gets what
+    survives the climb. Ledgers at every rung: a knight's manor is worth
+    so many marks, the Lord of the town so many manors and rents, the
+    crown the sum of its grudging lords — conservation tested, so taxes
+    still don't leak. The chronicler learns what everyone is worth, and a
+    cadet who keeps a poor manor for a rich liege now has a number to
+    resent. *Milestone: trace any mark in the crown's ledger down to the
+    manor that paid it.*
+
 ### Risks, named early
 
 - **Time-dependence (11) is the dangerous one** — it threatens every cache
