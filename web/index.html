@@ -179,12 +179,19 @@
       pollLore(id, token, title);
     }
 
-    async function pollLore(id, token, title) {
+    async function pollLore(id, token, title, misses = 0) {
       let r;
       try {
-        r = await (await fetch(`/lore/${id}`)).json();
+        const resp = await fetch(`/lore/${id}`);
+        r = resp.ok ? await resp.json() : { status: 'failed', message: `no such entry (${resp.status})` };
       } catch {
-        r = { status: 'failed', message: 'the server did not answer' };
+        // Transient network errors (e.g. the server restarting) retry
+        // rather than freezing the panel on its first failure.
+        if (misses < 5) {
+          setTimeout(() => pollLore(id, token, title, misses + 1), 2000);
+          return;
+        }
+        r = { status: 'failed', message: 'the server is not answering — is it running?' };
       }
       if (token !== loreToken) return; // user moved on
       if (r.status === 'generating') {

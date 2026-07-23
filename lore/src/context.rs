@@ -17,7 +17,9 @@ are canon and must never be contradicted. You may invent small texture — a \
 named person, a local custom, one notable event in living memory — so long as \
 it fits the facts and the era's demographics. No purple prose, no exclamation \
 marks, and never any hint that the world is invented. Do not repeat the raw \
-facts as a list; weave the ones that matter into prose.";
+facts as a list; weave the ones that matter into prose. Write plain \
+paragraphs only — no markdown, no headings, no lists, no title line; the \
+entry appears under its own name.";
 
 #[derive(Clone, Copy)]
 pub enum FeatureRef {
