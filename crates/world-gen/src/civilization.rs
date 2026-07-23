@@ -268,16 +268,36 @@ impl Civilization {
         }
 
         let mut roads = Vec::new();
+        // Wet-crossing verdicts are shared across every road's search —
+        // the same cell-pair edges come up again and again.
+        let mut wet_memo: HashMap<(u32, u32), bool> = HashMap::new();
         for (i, j, tier) in links {
             let (a, b) = (settlements[i].cell, settlements[j].cell);
-            if let Some(cells) = astar(h, a, b) {
+            if let Some(cells) = astar(planet, h, a, b, &mut wet_memo) {
                 let mut pts = Vec::with_capacity(cells.len());
                 pts.push(settlements[i].pos);
                 for &c in &cells[1..cells.len() - 1] {
-                    pts.push(jitter(seed ^ 0x0A0D, &h.grid, c, h.grid.cell_center(c)));
+                    // Jitter works at cell scale and can throw a waypoint
+                    // into the sea, the same way it once drowned the ports
+                    // — road points come ashore too. A correction that
+                    // wanders too far off the line would kink the road;
+                    // past that, the cell center is the safer lie.
+                    let ctr = h.grid.cell_center(c);
+                    let q = jitter(seed ^ 0x0A0D, &h.grid, c, ctr);
+                    let q = come_ashore(planet, h, c, q)
+                        .filter(|p| chord(*p, q) < 0.0025)
+                        .unwrap_or(ctr);
+                    pts.push(q);
                 }
                 pts.push(settlements[j].pos);
                 let pts = chaikin(&chaikin(&pts));
+                // The final drawn line is the truth the map shows, and
+                // jitter and corner-cutting both bend it off the path the
+                // search vetted — so vet the drawing itself. A ford or a
+                // bridge passes; a causeway means there is no road here.
+                if wet_stretch(planet, &pts) > 5.0 / 6371.0 {
+                    continue;
+                }
                 roads.push(Road {
                     tier,
                     a: i as u32,
@@ -304,10 +324,68 @@ pub fn river_name(planet_seed: u64, h: &Hydrology, cell: u32) -> Option<String> 
     ))
 }
 
+/// Does the straight run between two neighboring cells' centers dip into
+/// the sea? Cells are ~50 km wide and their land-call is made coarsely; a
+/// chord between two honest land cells can still cross a bay the grid
+/// cannot see — the "causeway" bug, in a world whose engineering stops at
+/// bridges. Sampled at fine elevation, memoized per edge. River channels
+/// stay legal (their carved floors sit above sea level): a road that
+/// crosses one is a ford or a bridge, which the era could build.
+fn wet_crossing(
+    planet: &Planet,
+    h: &Hydrology,
+    a: u32,
+    b: u32,
+    memo: &mut HashMap<(u32, u32), bool>,
+) -> bool {
+    let key = (a.min(b), a.max(b));
+    if let Some(&w) = memo.get(&key) {
+        return w;
+    }
+    let (pa, pb) = (h.grid.cell_center(a), h.grid.cell_center(b));
+    let wet = [0.2f64, 0.4, 0.6, 0.8].iter().any(|&t| {
+        let q = normalize(mix3(pa, pb, t));
+        let (lat, lon) = world_core::geo::unit_to_lat_lon(q);
+        planet.elevation(lat, lon, 7) <= 0.0
+    });
+    memo.insert(key, wet);
+    wet
+}
+
+/// The longest contiguous stretch of a polyline that runs over open sea,
+/// in chord units, sampled every ~2 km at full-detail elevation.
+fn wet_stretch(planet: &Planet, pts: &[[f64; 3]]) -> f64 {
+    let step = 2.0 / 6371.0;
+    let (mut run, mut worst) = (0.0f64, 0.0f64);
+    for w in pts.windows(2) {
+        let seg = chord(w[0], w[1]);
+        let samples = (seg / step).ceil().max(1.0) as usize;
+        for k in 0..samples {
+            let t = (k as f64 + 0.5) / samples as f64;
+            let q = normalize(mix3(w[0], w[1], t));
+            let (lat, lon) = world_core::geo::unit_to_lat_lon(q);
+            if planet.elevation(lat, lon, 8) <= 0.0 {
+                run += seg / samples as f64;
+                worst = worst.max(run);
+            } else {
+                run = 0.0;
+            }
+        }
+    }
+    worst
+}
+
 /// A* over the land grid. Cost is distance times a terrain factor: slopes
-/// and high ground are expensive, fording a river costs extra, oceans and
-/// lakes are impassable. Returns the cell chain, endpoints included.
-fn astar(h: &Hydrology, from: u32, to: u32) -> Option<Vec<u32>> {
+/// and high ground are expensive, fording a river costs extra, oceans,
+/// lakes and sea-dipping crossings are impassable. Returns the cell
+/// chain, endpoints included.
+fn astar(
+    planet: &Planet,
+    h: &Hydrology,
+    from: u32,
+    to: u32,
+    wet_memo: &mut HashMap<(u32, u32), bool>,
+) -> Option<Vec<u32>> {
     let goal = h.grid.cell_center(to);
     let start_h = chord(h.grid.cell_center(from), goal);
     let budget = start_h * 3.5 + 4.0 * h.grid.max_cell_size();
@@ -342,6 +420,9 @@ fn astar(h: &Hydrology, from: u32, to: u32) -> Option<Vec<u32>> {
         for &nb in h.adj(c as usize) {
             let ni = nb as usize;
             if h.ocean[ni] || h.is_lake(ni) {
+                continue;
+            }
+            if wet_crossing(planet, h, c, nb, wet_memo) {
                 continue;
             }
             let pn = h.grid.cell_center(nb);

@@ -36,7 +36,7 @@ pub use timeline::{founded_in, population_in, realm_in};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 18;
+pub const GEN_VERSION: u32 = 19;
 
 /// Version of the lore-facing context, kept apart from GEN_VERSION so a
 /// tile-only change does not orphan the written canon. Bump this when the
@@ -44,8 +44,9 @@ pub const GEN_VERSION: u32 = 18;
 /// (16: honest sea lanes redrew the trade map, and with it every "buys X
 /// from Y" the chronicler had been told. 17: settlements came ashore —
 /// positions, and every distance and bearing derived from them, moved.
-/// 18: the manor roll — ledgers rebuilt from the land up.)
-pub const LORE_VERSION: u32 = 18;
+/// 18: the manor roll — ledgers rebuilt from the land up. 19: roads
+/// stopped crossing bays, so the road network and its counts changed.)
+pub const LORE_VERSION: u32 = 19;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -1151,6 +1152,55 @@ mod tests {
         // Deterministic.
         let other = Planet::new(42);
         assert_eq!(econ.wealth, other.economy().wealth);
+    }
+
+    #[test]
+    fn roads_stay_ashore() {
+        // Bridges and fords, yes; causeways across bays, no. Walk every
+        // road at ~2 km sampling and assert no contiguous stretch of open
+        // water longer than a generous bridge.
+        let planet = planet();
+        let civ = planet.civilization();
+        const MAX_WET: f64 = 8.0 / 6371.0; // ~8 km of contiguous water
+        let step = 2.0 / 6371.0;
+        for r in &civ.roads {
+            let mut wet_run = 0.0f64;
+            let mut worst = 0.0f64;
+            for w in r.pts.windows(2) {
+                let seg = {
+                    let d = [w[0][0] - w[1][0], w[0][1] - w[1][1], w[0][2] - w[1][2]];
+                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                };
+                let samples = (seg / step).ceil().max(1.0) as usize;
+                for k in 0..samples {
+                    let t = (k as f64 + 0.5) / samples as f64;
+                    let q = [
+                        w[0][0] + (w[1][0] - w[0][0]) * t,
+                        w[0][1] + (w[1][1] - w[0][1]) * t,
+                        w[0][2] + (w[1][2] - w[0][2]) * t,
+                    ];
+                    let n = 1.0 / (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
+                    let (lat, lon) = world_core::geo::unit_to_lat_lon([
+                        q[0] * n,
+                        q[1] * n,
+                        q[2] * n,
+                    ]);
+                    if planet.elevation(lat, lon, 8) <= 0.0 {
+                        wet_run += seg / samples as f64;
+                        worst = worst.max(wet_run);
+                    } else {
+                        wet_run = 0.0;
+                    }
+                }
+            }
+            assert!(
+                worst < MAX_WET,
+                "road {} ↔ {} runs {:.1} km over open water",
+                civ.settlements[r.a as usize].name,
+                civ.settlements[r.b as usize].name,
+                worst * 6371.0
+            );
+        }
     }
 
     #[test]
