@@ -92,6 +92,15 @@ of the inn. All of it is a pure function of the seed, computed on
 demand, shown instantly in the panel, and fed to the chronicler as
 canon so the prose and the roster never disagree.
 
+Above the tradesmen sits the peerage: every settlement below a capital
+is a holding — town lords hold of the crown, village manors go to
+cadet kinsmen or landed knights who hold of the town lord. The great
+houses fall out of the dynasty simulation itself: a house deposed
+within living memory still presses its claim; one deposed centuries
+ago is proud and threadbare on the lands it kept. The tenure web is
+canon too, so a chronicle knows exactly which grudge sits in which
+manor.
+
 ## Run it
 
 ```sh

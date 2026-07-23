@@ -10,6 +10,7 @@ pub mod civilization;
 pub mod history;
 pub mod hydrology;
 pub mod interior;
+pub mod peerage;
 
 use std::sync::OnceLock;
 
@@ -21,10 +22,11 @@ pub use civilization::{river_name, Civilization, Road, Settlement, SettlementKin
 pub use history::{History, RealmHistory, Ruler, PRESENT_YEAR};
 pub use hydrology::{Hydrology, RiverEdge};
 pub use interior::{interior, Interior};
+pub use peerage::{Holding, House, Peerage};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
-pub const GEN_VERSION: u32 = 11;
+pub const GEN_VERSION: u32 = 12;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -76,6 +78,7 @@ pub struct Planet {
     hydro: OnceLock<Hydrology>,
     civ: OnceLock<Civilization>,
     hist: OnceLock<History>,
+    peers: OnceLock<Peerage>,
 }
 
 impl Planet {
@@ -99,6 +102,7 @@ impl Planet {
             hydro: OnceLock::new(),
             civ: OnceLock::new(),
             hist: OnceLock::new(),
+            peers: OnceLock::new(),
         }
     }
 
@@ -118,6 +122,11 @@ impl Planet {
     /// Five hundred years of deterministic annals, built once per planet.
     pub fn history(&self) -> &History {
         self.hist.get_or_init(|| History::build(self))
+    }
+
+    /// Great houses, manors and the tenure web, built once per planet.
+    pub fn peerage(&self) -> &Peerage {
+        self.peers.get_or_init(|| Peerage::build(self))
     }
 
     /// Tectonics at a lat/lon (radians), including the boundary-wander warp.
@@ -782,6 +791,77 @@ mod tests {
             v.trades.iter().map(|t| t.count).sum::<u32>()
                 < a.trades.iter().map(|t| t.count).sum::<u32>(),
             "a village cannot out-trade a city"
+        );
+    }
+
+    #[test]
+    fn the_peerage_holds_together() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let peers = planet.peerage();
+
+        let mut former_royals = 0;
+        for s in &civ.settlements {
+            if s.capital {
+                assert!(peers.holding(s.cell).is_none(), "the crown holds of no one");
+                let houses = peers.houses(s.cell).expect("every realm has houses");
+                assert!(houses.len() >= 4);
+                assert_eq!(
+                    houses.iter().filter(|h| h.reigning).count(),
+                    1,
+                    "exactly one house reigns"
+                );
+                // Every house that once reigned matches the dynasty record.
+                let rh = planet.history().realm(s.cell).unwrap();
+                for h in houses.iter().filter(|h| h.held_seat.is_some()) {
+                    assert!(
+                        rh.rulers.iter().any(|r| r.house == h.name),
+                        "House {} claims a seat the annals never gave it",
+                        h.name
+                    );
+                    if !h.reigning {
+                        former_royals += 1;
+                    }
+                }
+                continue;
+            }
+            let hold = peers
+                .holding(s.cell)
+                .expect("every lesser settlement is held by someone");
+            // Tenure chains terminate at the capital in at most two steps.
+            let liege = hold.liege_cell;
+            if liege != s.realm_capital {
+                let up = peers.holding(liege).expect("liege town is itself held");
+                assert_eq!(
+                    up.liege_cell, s.realm_capital,
+                    "a village's town liege must hold of the crown"
+                );
+            }
+            if hold.cadet {
+                let up = peers.holding(liege);
+                let liege_house = up.map(|u| u.house.as_str()).unwrap_or("");
+                assert!(
+                    liege_house == hold.house || liege == s.realm_capital,
+                    "a cadet must share the liege's house"
+                );
+            }
+            assert!((30..=70).contains(&hold.age));
+        }
+        assert!(
+            former_royals > 0,
+            "five centuries of broken lines must leave fallen houses somewhere"
+        );
+
+        // Deterministic, like everything else.
+        let other = Planet::new(42);
+        let s = civ.settlements.iter().find(|s| !s.capital).unwrap();
+        let (a, b) = (
+            peers.holding(s.cell).unwrap(),
+            other.peerage().holding(s.cell).unwrap(),
+        );
+        assert_eq!(
+            (&a.house, &a.holder, a.age, a.liege_cell),
+            (&b.house, &b.holder, b.age, b.liege_cell)
         );
     }
 

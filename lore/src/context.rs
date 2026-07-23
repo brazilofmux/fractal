@@ -173,6 +173,40 @@ fn settlement_facts(planet: &Planet, i: usize) -> String {
             r.title, r.name, r.house, r.accession, PRESENT_YEAR
         ));
     }
+    // Who holds this place, and of whom — the tenure web is canon.
+    if let Some(hold) = planet.peerage().holding(s.cell) {
+        let liege = if hold.liege_cell == s.realm_capital {
+            "the crown itself".to_string()
+        } else {
+            civ.settlements
+                .iter()
+                .find(|t| t.cell == hold.liege_cell)
+                .map(|t| format!("the lord of {}", t.name))
+                .unwrap_or_else(|| "the crown".to_string())
+        };
+        line(format!(
+            "held by {} {} of House {}{}, aged {}, who holds of {}",
+            hold.title,
+            hold.holder,
+            hold.house,
+            if hold.cadet { " (a cadet of the liege's line)" } else { "" },
+            hold.age,
+            liege
+        ));
+        // A holder from a fallen royal house carries that weight.
+        if let Some(houses) = planet.peerage().houses(s.realm_capital) {
+            if let Some(h) = houses
+                .iter()
+                .find(|h| h.name == hold.house && !h.reigning && h.held_seat.is_some())
+            {
+                let (a, b) = h.held_seat.unwrap();
+                line(format!(
+                    "House {} held the realm's seat from year {} to {}, and today {}",
+                    h.name, a, b, h.disposition
+                ));
+            }
+        }
+    }
     // What living memory holds: the realm's last few decades.
     if let Some(rh) = planet.history().realm(s.realm_capital) {
         for a in rh.annals.iter().filter(|a| a.year + 40 >= PRESENT_YEAR).take(2) {
@@ -304,6 +338,19 @@ fn realm_facts(planet: &Planet, capital: usize) -> String {
                 compass(cap.pos, other.pos)
             ),
         );
+    }
+
+    // The great houses and their tempers.
+    if let Some(houses) = planet.peerage().houses(cap.cell) {
+        f.push_str("\nThe great houses of the realm:\n");
+        for h in houses {
+            let seat = match h.held_seat {
+                Some((a, _)) if h.reigning => format!("royal since year {a}"),
+                Some((a, b)) => format!("held the seat {a}–{b}"),
+                None => "never royal".to_string(),
+            };
+            line(&mut f, format!("House {} — {}; {}", h.name, seat, h.disposition));
+        }
     }
 
     // The annals: the realm's simulated five centuries, entry by entry.

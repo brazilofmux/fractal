@@ -168,11 +168,23 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
     // every state, canon whether or not the chronicle is written yet.
     if let Some(cell) = id.strip_prefix('r').and_then(|c| c.parse::<u32>().ok()) {
         if let Some(rh) = app.planet.history().realm(cell) {
-            body["annals"] = rh
-                .annals
-                .iter()
-                .map(|a| json!(format!("Year {} — {}", a.year, a.text)))
-                .collect();
+            let mut lines: Vec<String> = Vec::new();
+            if let Some(houses) = app.planet.peerage().houses(cell) {
+                for h in houses {
+                    let seat = match h.held_seat {
+                        Some((a, _)) if h.reigning => format!("royal since {a}"),
+                        Some((a, b)) => format!("held the seat {a}–{b}"),
+                        None => "never royal".into(),
+                    };
+                    lines.push(format!("House {} — {}; {}", h.name, seat, h.disposition));
+                }
+            }
+            lines.extend(
+                rh.annals
+                    .iter()
+                    .map(|a| format!("Year {} — {}", a.year, a.text)),
+            );
+            body["annals"] = lines.into_iter().map(|l| json!(l)).collect();
         }
     }
     // Likewise a settlement's interior: wards, trades, notable people.
@@ -181,6 +193,24 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
         if let Some(i) = civ.settlements.iter().position(|s| s.cell == cell) {
             let inside = world_gen::interior(&app.planet, i);
             let mut lines: Vec<String> = Vec::new();
+            if let Some(hold) = app.planet.peerage().holding(cell) {
+                let liege = civ
+                    .settlements
+                    .iter()
+                    .find(|t| t.cell == hold.liege_cell)
+                    .map(|t| {
+                        if t.capital {
+                            format!("the crown of {}", t.name)
+                        } else {
+                            format!("the lord of {}", t.name)
+                        }
+                    })
+                    .unwrap_or_else(|| "the crown".into());
+                lines.push(format!(
+                    "Held by {} {} of House {} ({}), of {}",
+                    hold.title, hold.holder, hold.house, hold.age, liege
+                ));
+            }
             if !inside.wards.is_empty() {
                 let names: Vec<&str> = inside.wards.iter().map(|w| w.name.as_str()).collect();
                 lines.push(format!("Wards: {}", names.join(" · ")));
