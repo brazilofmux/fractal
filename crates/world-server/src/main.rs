@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -12,7 +12,8 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 use tower_http::services::ServeDir;
-use world_gen::{Planet, GEN_VERSION};
+use world_core::geo::unit_to_lat_lon;
+use world_gen::{Planet, GEN_VERSION, PRESENT_YEAR};
 
 const MAX_ZOOM: u32 = 24;
 
@@ -84,6 +85,7 @@ async fn main() {
     let router = Router::new()
         .route("/tiles/{layer}/{z}/{x}/{y}", get(tile))
         .route("/lore/{id}", get(lore_entry))
+        .route("/state/{year}", get(state_in))
         .route("/notes", get(notes_list).post(notes_add))
         .route("/notes/{id}", delete(notes_delete))
         .fallback_service(ServeDir::new("web"))
@@ -158,13 +160,25 @@ async fn tile(
     tile_response(body, mime)
 }
 
+#[derive(Deserialize)]
+struct YearQuery {
+    year: Option<u32>,
+}
+
 /// Lore endpoint: cached canon returns immediately; unwritten entries start
-/// generating in the background and the client polls until ready.
-async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
+/// generating in the background and the client polls until ready. The
+/// optional `year` query is the fourth coordinate — the chronicler writes
+/// from whatever year the viewer is parked in.
+async fn lore_entry(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Query(q): Query<YearQuery>,
+) -> Response {
+    let year = q.year.unwrap_or(PRESENT_YEAR).clamp(1, PRESENT_YEAR);
     let planet = app.planet.clone();
     let engine = app.lore.clone();
     let req_id = id.clone();
-    let status = tokio::task::spawn_blocking(move || engine.request(&planet, &req_id))
+    let status = tokio::task::spawn_blocking(move || engine.request(&planet, &req_id, year))
         .await
         .expect("lore task");
 
@@ -181,9 +195,15 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
         }
     };
     // Realm annals come straight from the generator: instantly available in
-    // every state, canon whether or not the chronicle is written yet.
+    // every state, canon whether or not the chronicle is written yet. Parked
+    // in an earlier year, the list stops where that year's knowledge does.
     if let Some(cell) = id.strip_prefix('r').and_then(|c| c.parse::<u32>().ok()) {
-        if let Some(rh) = app.planet.history().realm(cell) {
+        if year < PRESENT_YEAR && app.planet.history().realm(cell).is_some() {
+            body["annals"] = lore::context::annal_lines_in(&app.planet, cell, year)
+                .into_iter()
+                .map(|l| json!(l))
+                .collect();
+        } else if let Some(rh) = app.planet.history().realm(cell) {
             let mut lines: Vec<String> = Vec::new();
             if let Some(marks) = app.planet.economy().realm_ledger.get(&cell) {
                 lines.push(format!("The crown's ledger: some {marks} marks a year"));
@@ -207,10 +227,36 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
         }
     }
     // Likewise a settlement's interior: wards and trades as plain lines,
-    // people as clickable atlas references.
+    // people as clickable atlas references. Interiors, trade and the living
+    // are functions of the present; an earlier year shows what it can know.
     if let Some(cell) = id.strip_prefix('s').and_then(|c| c.parse::<u32>().ok()) {
         let civ = app.planet.civilization();
-        if let Some(i) = civ.settlements.iter().position(|s| s.cell == cell) {
+        if year < PRESENT_YEAR {
+            if let Some(i) = civ.settlements.iter().position(|s| s.cell == cell) {
+                let planet = &app.planet;
+                let mut lines: Vec<String> = Vec::new();
+                lines.push(format!(
+                    "Founded in year {}",
+                    world_gen::founded_in(planet, i)
+                ));
+                lines.push(format!(
+                    "In year {year}: some {} souls",
+                    world_gen::population_in(planet, i, year)
+                ));
+                if let Some(cap) = world_gen::realm_in(planet, i, year) {
+                    if let Some(c) = civ.settlements.iter().find(|s| s.cell == cap) {
+                        lines.push(format!("Held by the Realm of {}", c.name));
+                        if let Some(r) = planet.history().ruler_in(cap, year) {
+                            lines.push(format!(
+                                "Ruled by {} {} of House {}, since year {}",
+                                r.title, r.name, r.house, r.accession
+                            ));
+                        }
+                    }
+                }
+                body["annals"] = lines.into_iter().map(|l| json!(l)).collect();
+            }
+        } else if let Some(i) = civ.settlements.iter().position(|s| s.cell == cell) {
             let inside = world_gen::interior(&app.planet, i);
             let mut lines: Vec<String> = Vec::new();
             if !inside.wards.is_empty() {
@@ -271,6 +317,47 @@ async fn lore_entry(State(app): State<Arc<App>>, Path(id): Path<String>) -> Resp
             }
         }
     }
+    Json(body).into_response()
+}
+
+/// The world as a given year knew it: every settlement already founded,
+/// with that year's head count and allegiance. Small enough to compute on
+/// demand — the fourth coordinate is an input, never a state.
+async fn state_in(State(app): State<Arc<App>>, Path(year): Path<u32>) -> Response {
+    let year = year.clamp(1, PRESENT_YEAR);
+    let planet = app.planet.clone();
+    let body = tokio::task::spawn_blocking(move || {
+        let civ = planet.civilization();
+        let settlements: Vec<serde_json::Value> = civ
+            .settlements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                let cap = world_gen::realm_in(&planet, i, year)?;
+                let realm = civ
+                    .settlements
+                    .iter()
+                    .find(|c| c.cell == cap)
+                    .map(|c| c.name.as_str())
+                    .unwrap_or("");
+                let (lat, lon) = unit_to_lat_lon(s.pos);
+                Some(json!({
+                    "cell": s.cell,
+                    "name": s.name,
+                    "rank": s.kind.rank(),
+                    "port": s.port as u8,
+                    "lat": lat.to_degrees(),
+                    "lon": lon.to_degrees(),
+                    "pop": world_gen::population_in(&planet, i, year),
+                    "realm_capital": cap,
+                    "realm": realm,
+                }))
+            })
+            .collect();
+        json!({ "year": year, "settlements": settlements })
+    })
+    .await
+    .expect("state task");
     Json(body).into_response()
 }
 

@@ -16,7 +16,19 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use world_gen::Planet;
 
-use context::{feature_name, parse_id, prompt_for, realm_of, FeatureRef, SYSTEM_PROMPT};
+use context::{feature_name, parse_id, prompt_for, realm_of_in, FeatureRef, SYSTEM_PROMPT};
+use world_gen::PRESENT_YEAR;
+
+/// Canon is filed under its year when it is not the present's — entries
+/// written before the fourth coordinate existed keep their ids, and stay
+/// the year-500 canon.
+fn cache_key(id: &str, year: u32) -> String {
+    if year == PRESENT_YEAR {
+        id.to_string()
+    } else {
+        format!("{id}@{year}")
+    }
+}
 
 /// Writes one entry given (system prompt, user prompt). The real one calls
 /// the Claude API; tests inject their own.
@@ -98,18 +110,44 @@ impl LoreEngine {
         self.writer.is_some()
     }
 
-    /// Look up a feature's lore; if it isn't written yet, start writing it
-    /// in the background and report `Generating`.
-    pub fn request(self: &Arc<Self>, planet: &Arc<Planet>, id: &str) -> LoreStatus {
+    /// Look up a feature's lore as of a year; if it isn't written yet,
+    /// start writing it in the background and report `Generating`.
+    pub fn request(self: &Arc<Self>, planet: &Arc<Planet>, id: &str, year: u32) -> LoreStatus {
         let Some(fref) = parse_id(planet, id) else {
             return LoreStatus::NotFound;
         };
+        // Geography does not move and the living are only known in the
+        // present — those entries are the same in every year.
+        let year = match fref {
+            FeatureRef::Natural(_) | FeatureRef::Person(..) => PRESENT_YEAR,
+            _ => year.clamp(1, PRESENT_YEAR),
+        };
+        // A place the year has not yet founded has no entry to write.
+        match fref {
+            FeatureRef::Settlement(i) if year < world_gen::founded_in(planet, i) => {
+                return LoreStatus::NotFound;
+            }
+            FeatureRef::Realm(i) => {
+                let cell = planet.civilization().settlements[i].cell;
+                if planet
+                    .history()
+                    .realm(cell)
+                    .is_some_and(|r| year < r.founding_year)
+                {
+                    return LoreStatus::NotFound;
+                }
+            }
+            _ => {}
+        }
         let realm = match fref {
-            FeatureRef::Settlement(_) | FeatureRef::Person(..) => realm_of(planet, fref),
+            FeatureRef::Settlement(_) | FeatureRef::Person(..) => {
+                realm_of_in(planet, fref, year)
+            }
             _ => None,
         };
 
-        if let Some(body) = self.cached(id) {
+        let key = cache_key(id, year);
+        if let Some(body) = self.cached(&key) {
             return LoreStatus::Ready {
                 name: feature_name(planet, fref),
                 body,
@@ -124,10 +162,10 @@ impl LoreEngine {
             };
         }
         // A failed attempt reports once, then clears so the next click retries.
-        if let Some(message) = self.errors.lock().unwrap().remove(id) {
+        if let Some(message) = self.errors.lock().unwrap().remove(&key) {
             return LoreStatus::Failed { message };
         }
-        if !self.begin(id) {
+        if !self.begin(&key) {
             return LoreStatus::Generating;
         }
 
@@ -135,52 +173,55 @@ impl LoreEngine {
         let planet = planet.clone();
         let id = id.to_string();
         std::thread::spawn(move || {
-            let outcome = engine.generate(&planet, &id, fref);
+            let outcome = engine.generate(&planet, &id, fref, year);
             if let Err(e) = outcome {
-                engine.errors.lock().unwrap().insert(id.clone(), e);
+                engine.errors.lock().unwrap().insert(cache_key(&id, year), e);
             }
-            engine.in_flight.lock().unwrap().remove(&id);
+            engine.in_flight.lock().unwrap().remove(&cache_key(&id, year));
         });
         LoreStatus::Generating
     }
 
-    /// Write one feature's entry (realm chronicle first for settlements).
-    fn generate(&self, planet: &Planet, id: &str, fref: FeatureRef) -> Result<(), String> {
+    /// Write one feature's entry (realm chronicle first for settlements —
+    /// the realm that held the place in that year, not necessarily today's).
+    fn generate(&self, planet: &Planet, id: &str, fref: FeatureRef, year: u32) -> Result<(), String> {
         let realm_body = match fref {
             FeatureRef::Settlement(_) => {
-                let (realm_id, _) = realm_of(planet, fref).expect("settlements have realms");
-                Some(self.ensure(planet, &realm_id)?)
+                let (realm_id, _) =
+                    realm_of_in(planet, fref, year).expect("settlements have realms");
+                Some(self.ensure(planet, &realm_id, year)?)
             }
             _ => None,
         };
         let writer = self.writer.as_ref().ok_or("lore disabled")?;
-        let prompt = prompt_for(planet, fref, realm_body.as_deref());
+        let prompt = prompt_for(planet, fref, realm_body.as_deref(), year);
         let body = writer(SYSTEM_PROMPT, &prompt)?;
-        self.store(id, &feature_name(planet, fref), &body);
+        self.store(&cache_key(id, year), &feature_name(planet, fref), &body);
         Ok(())
     }
 
     /// Get a feature's lore, generating it inline if needed — used for the
     /// realm-before-settlement dependency. If another thread is already
     /// writing it, wait for that instead of writing it twice.
-    fn ensure(&self, planet: &Planet, id: &str) -> Result<String, String> {
-        if let Some(body) = self.cached(id) {
+    fn ensure(&self, planet: &Planet, id: &str, year: u32) -> Result<String, String> {
+        let key = cache_key(id, year);
+        if let Some(body) = self.cached(&key) {
             return Ok(body);
         }
-        if self.begin(id) {
+        if self.begin(&key) {
             let fref = parse_id(planet, id).ok_or("bad dependency id")?;
-            let outcome = self.generate(planet, id, fref);
-            self.in_flight.lock().unwrap().remove(id);
+            let outcome = self.generate(planet, id, fref, year);
+            self.in_flight.lock().unwrap().remove(&key);
             outcome?;
-            return self.cached(id).ok_or_else(|| "store failed".into());
+            return self.cached(&key).ok_or_else(|| "store failed".into());
         }
         // Someone else is writing it; wait politely.
         for _ in 0..240 {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            if let Some(body) = self.cached(id) {
+            if let Some(body) = self.cached(&key) {
                 return Ok(body);
             }
-            if !self.in_flight.lock().unwrap().contains(id) {
+            if !self.in_flight.lock().unwrap().contains(&key) {
                 break;
             }
         }
@@ -248,8 +289,8 @@ mod tests {
         let civ = planet.civilization();
         let i = civ.settlements.iter().position(|s| s.capital).unwrap();
         let fref = FeatureRef::Settlement(i);
-        let a = prompt_for(&planet, fref, None);
-        let b = prompt_for(&planet, fref, None);
+        let a = prompt_for(&planet, fref, None, 500);
+        let b = prompt_for(&planet, fref, None, 500);
         assert_eq!(a, b, "context must be a pure function of the world");
         let s = &civ.settlements[i];
         assert!(a.contains(&s.name));
@@ -282,17 +323,17 @@ mod tests {
             Arc::new(LoreEngine::with_writer(&db, planet.seed, 9, writer).unwrap());
 
         assert!(matches!(
-            engine.request(&planet, &id),
+            engine.request(&planet, &id, 500),
             LoreStatus::Generating
         ));
         // Wait for the background thread to finish both entries.
         for _ in 0..100 {
-            if matches!(engine.request(&planet, &id), LoreStatus::Ready { .. }) {
+            if matches!(engine.request(&planet, &id, 500), LoreStatus::Ready { .. }) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        let status = engine.request(&planet, &id);
+        let status = engine.request(&planet, &id, 500);
         let LoreStatus::Ready { body, realm, .. } = status else {
             panic!("lore never became ready");
         };
@@ -313,14 +354,78 @@ mod tests {
         let engine2 =
             Arc::new(LoreEngine::with_writer(&db, planet.seed, 9, boom).unwrap());
         assert!(matches!(
-            engine2.request(&planet, &id),
+            engine2.request(&planet, &id, 500),
             LoreStatus::Ready { .. }
         ));
         assert!(matches!(
-            engine2.request(&planet, &realm_id),
+            engine2.request(&planet, &realm_id, 500),
             LoreStatus::Ready { .. }
         ));
         assert_eq!(engine2.entries_written(), 2);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn the_chronicler_writes_from_the_parked_year() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let cap_i = civ.settlements.iter().position(|s| s.capital).unwrap();
+        let cap = &civ.settlements[cap_i];
+        let rh = planet.history().realm(cap.cell).unwrap();
+        let year = (rh.founding_year + world_gen::PRESENT_YEAR) / 2;
+
+        // The past brief knows its year, and nothing after it: no annal
+        // later than the parked year, no outcome of a war still burning.
+        let prompt = prompt_for(&planet, FeatureRef::Realm(cap_i), None, year);
+        assert!(prompt.contains(&format!("as it stands in year {year}")));
+        for a in rh.annals.iter().filter(|a| a.year > year) {
+            assert!(
+                !prompt.contains(&format!("Year {} —", a.year)),
+                "the year-{year} chronicle leaks a year-{} annal",
+                a.year
+            );
+        }
+        for w in planet.history().wars.iter().filter(|w| {
+            (w.a == cap.cell || w.b == cap.cell) && w.start <= year && w.end > year
+        }) {
+            assert!(
+                !prompt.contains(&format!("fought until year {}", w.end)),
+                "an unfinished war's outcome leaked into year {year}"
+            );
+        }
+        // The present brief is untouched by the fourth coordinate: byte-for-
+        // byte what it was before, so pre-Phase-11 canon stays valid.
+        assert!(prompt_for(&planet, FeatureRef::Realm(cap_i), None, world_gen::PRESENT_YEAR)
+            .contains("the present year is"));
+
+        // Each year is its own canon entry; the present keeps its old key.
+        let calls = Arc::new(AtomicU32::new(0));
+        let writer: Writer = {
+            let calls = calls.clone();
+            Arc::new(move |_, _| Ok(format!("Entry #{}", calls.fetch_add(1, Ordering::SeqCst) + 1)))
+        };
+        let db = temp_db("years");
+        let engine = Arc::new(LoreEngine::with_writer(&db, planet.seed, 9, writer).unwrap());
+        let id = format!("r{}", cap.cell);
+        for y in [world_gen::PRESENT_YEAR, year] {
+            engine.request(&planet, &id, y);
+            for _ in 0..100 {
+                if matches!(engine.request(&planet, &id, y), LoreStatus::Ready { .. }) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        assert_eq!(engine.entries_written(), 2, "two years, two entries");
+        assert!(matches!(
+            engine.request(&planet, &id, world_gen::PRESENT_YEAR),
+            LoreStatus::Ready { .. }
+        ));
+        // Before the founding there is nothing to ask about.
+        assert!(matches!(
+            engine.request(&planet, &id, rh.founding_year - 1),
+            LoreStatus::NotFound
+        ));
         let _ = std::fs::remove_file(&db);
     }
 
@@ -333,17 +438,17 @@ mod tests {
             Arc::new(LoreEngine::with_writer(&db, planet.seed, 9, failing).unwrap());
 
         assert!(matches!(
-            engine.request(&planet, "s999999999"),
+            engine.request(&planet, "s999999999", 500),
             LoreStatus::NotFound
         ));
         assert!(matches!(
-            engine.request(&planet, "x1"),
+            engine.request(&planet, "x1", 500),
             LoreStatus::NotFound
         ));
 
         let s = &planet.civilization().settlements[0];
         let id = format!("s{}", s.cell);
-        engine.request(&planet, &id);
+        engine.request(&planet, &id, 500);
         for _ in 0..100 {
             std::thread::sleep(std::time::Duration::from_millis(50));
             if !engine.in_flight.lock().unwrap().contains(&id) {
@@ -351,12 +456,12 @@ mod tests {
             }
         }
         assert!(matches!(
-            engine.request(&planet, &id),
+            engine.request(&planet, &id, 500),
             LoreStatus::Failed { .. }
         ));
         // And the failure cleared, so the next request retries.
         assert!(matches!(
-            engine.request(&planet, &id),
+            engine.request(&planet, &id, 500),
             LoreStatus::Generating
         ));
         let _ = std::fs::remove_file(&db);

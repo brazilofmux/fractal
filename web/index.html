@@ -66,6 +66,10 @@
       <option value="temperature">temperature</option>
       <option value="precipitation">precipitation</option>
     </select>
+    <div id="timebar" style="margin-top:6px">
+      <input type="range" id="year" min="1" max="500" value="500" style="width:190px;vertical-align:middle">
+      <span id="year-label" style="margin-left:6px">year 500 — the present</span>
+    </div>
   </div>
   <script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
   <script>
@@ -245,15 +249,17 @@
     const panel = document.getElementById('lore');
     const el = (id) => document.getElementById(id);
     let loreToken = 0; // invalidates in-flight polls when selection changes
+    let currentYear = 500; // the fourth coordinate; 500 is the present
 
     function showLore(id, title, subtitle) {
       const token = ++loreToken;
+      const year = currentYear; // parked here for the whole poll
       panel.style.display = 'block';
       el('lore-title').textContent = title;
       el('lore-meta').textContent = subtitle || '';
       el('lore-body').innerHTML = '<span class="quiet">The chronicler is consulted…</span>';
       el('lore-annals').style.display = 'none';
-      pollLore(id, token, title);
+      pollLore(id, token, title, year);
     }
 
     function renderAnnals(r) {
@@ -277,16 +283,16 @@
       a.style.display = 'block';
     }
 
-    async function pollLore(id, token, title, misses = 0) {
+    async function pollLore(id, token, title, year = 500, misses = 0) {
       let r;
       try {
-        const resp = await fetch(`/lore/${id}`);
+        const resp = await fetch(`/lore/${id}?year=${year}`);
         r = resp.ok ? await resp.json() : { status: 'failed', message: `no such entry (${resp.status})` };
       } catch {
         // Transient network errors (e.g. the server restarting) retry
         // rather than freezing the panel on its first failure.
         if (misses < 5) {
-          setTimeout(() => pollLore(id, token, title, misses + 1), 2000);
+          setTimeout(() => pollLore(id, token, title, year, misses + 1), 2000);
           return;
         }
         r = { status: 'failed', message: 'the server is not answering — is it running?' };
@@ -295,7 +301,7 @@
       renderAnnals(r);
       if (r.status === 'generating') {
         el('lore-body').innerHTML = '<span class="quiet">The chronicler is writing…</span>';
-        setTimeout(() => pollLore(id, token, title), 2500);
+        setTimeout(() => pollLore(id, token, title, year), 2500);
         return;
       }
       if (r.status === 'ready') {
@@ -336,9 +342,11 @@
       el('lore-title').textContent = 'A road';
       el('lore-meta').textContent = ['track', 'lesser road', 'high road'][3 - f.tier] || 'road';
       el('lore-annals').style.display = 'none';
-      el('lore-body').textContent = f.goods
-        ? `Carts and drovers pass with ${f.goods}.`
-        : 'Little moves here but local traffic.';
+      el('lore-body').textContent = currentYear !== 500
+        ? 'The ledgers of what travels here are kept only in the present.'
+        : f.goods
+          ? `Carts and drovers pass with ${f.goods}.`
+          : 'Little moves here but local traffic.';
     });
     map.on('click', 'sea-lanes', (e) => {
       const f = e.features[0].properties;
@@ -397,6 +405,89 @@
         paint: { 'text-color': '#e8c464', 'text-halo-color': '#0c1018', 'text-halo-width': 1.4 },
       });
       loadNotes();
+
+      // The fourth coordinate: past years render their settlements from
+      // /state/{year}, dots tinted by whichever realm held them that year.
+      map.addSource('state', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      map.addLayer({
+        id: 'state-dots', type: 'circle', source: 'state',
+        layout: { visibility: 'none' },
+        paint: {
+          'circle-radius': ['+', 6.5, ['*', -1.5, ['get', 'rank']]],
+          'circle-color': ['get', 'color'],
+          'circle-stroke-color': '#141a26',
+          'circle-stroke-width': 1.2,
+        },
+      }, 'note-marks');
+      map.addLayer({
+        id: 'state-names', type: 'symbol', source: 'state',
+        layout: {
+          visibility: 'none',
+          'text-field': ['get', 'name'],
+          'text-font': ['Open Sans Semibold'],
+          'text-size': ['+', 16, ['*', -2, ['get', 'rank']]],
+          'text-offset': [0, 0.9],
+          'text-anchor': 'top',
+        },
+        paint: {
+          'text-color': '#ede6d4',
+          'text-halo-color': '#0c1018',
+          'text-halo-width': 1.4,
+        },
+      }, 'note-marks');
+      map.on('click', 'state-dots', (e) => {
+        const f = e.features[0].properties;
+        const kind = { 1: 'city', 2: 'town', 3: 'village' }[f.rank] || '?';
+        showLore(`s${f.cell}`, f.name,
+          `${f.port ? 'port ' : ''}${kind} in year ${currentYear} · pop. ~${f.pop} · realm of ${f.realm}`);
+      });
+      map.on('mouseenter', 'state-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
+      map.on('mouseleave', 'state-dots', () => { map.getCanvas().style.cursor = ''; });
+    });
+
+    // --- The year slider -------------------------------------------------
+    // Realm tints are stable hashes of the capital cell, so a realm keeps
+    // its color as the years pass and its borders move.
+    const realmColor = (cell) =>
+      `hsl(${(Math.imul(cell, 2654435761) >>> 0) % 360}, 62%, 60%)`;
+    let stateToken = 0;
+    async function setYear(y) {
+      currentYear = y;
+      el('year-label').textContent = y === 500 ? 'year 500 — the present' : `year ${y}`;
+      if (!map.getLayer('state-dots')) return;
+      const present = y === 500;
+      // Sea lanes carry the present's trade; past years put the tile
+      // settlements away and draw that year's world instead.
+      for (const id of ['settlement-dots', 'settlement-names', 'sea-lanes'])
+        map.setLayoutProperty(id, 'visibility', present ? 'visible' : 'none');
+      for (const id of ['state-dots', 'state-names'])
+        map.setLayoutProperty(id, 'visibility', present ? 'none' : 'visible');
+      if (present) return;
+      const token = ++stateToken;
+      try {
+        const r = await (await fetch(`/state/${y}`)).json();
+        if (token !== stateToken || currentYear !== y) return;
+        map.getSource('state').setData({
+          type: 'FeatureCollection',
+          features: r.settlements.map((s) => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+            properties: {
+              cell: s.cell, name: s.name, rank: s.rank, port: s.port,
+              pop: s.pop, realm: s.realm, color: realmColor(s.realm_capital),
+            },
+          })),
+        });
+      } catch {}
+    }
+    let yearTimer;
+    document.getElementById('year').addEventListener('input', (e) => {
+      const y = +e.target.value;
+      clearTimeout(yearTimer);
+      yearTimer = setTimeout(() => setYear(y), 120);
     });
 
     function showNoteForm(lngLat) {

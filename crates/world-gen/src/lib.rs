@@ -14,6 +14,7 @@ pub mod hydrology;
 pub mod interior;
 pub mod peerage;
 pub mod people;
+pub mod timeline;
 
 use std::sync::OnceLock;
 
@@ -24,11 +25,12 @@ use world_core::noise::{fbm, ridged};
 pub use civilization::{river_name, Civilization, Road, Settlement, SettlementKind};
 pub use economy::{Economy, Good, Lane};
 pub use geography::{Geography, NaturalFeature, NaturalKind};
-pub use history::{History, RealmHistory, Ruler, PRESENT_YEAR};
+pub use history::{History, Plague, RealmHistory, Ruler, War, PRESENT_YEAR};
 pub use hydrology::{Hydrology, RiverEdge};
 pub use interior::{interior, Interior};
 pub use peerage::{Holding, House, Peerage};
 pub use people::{household, household_lines, people_of, person_at};
+pub use timeline::{founded_in, population_in, realm_in};
 
 /// Bump whenever generated output changes — cached tiles are keyed on this,
 /// so stale caches invalidate themselves.
@@ -1051,6 +1053,88 @@ mod tests {
         // Deterministic.
         let other = Planet::new(42);
         assert_eq!(econ.wealth, other.economy().wealth);
+    }
+
+    #[test]
+    fn the_fourth_coordinate_holds() {
+        let planet = planet();
+        let civ = planet.civilization();
+        let hist = planet.history();
+
+        // The present is canon: at year 500 every function of the year
+        // agrees exactly with what the other phases already established.
+        for (i, s) in civ.settlements.iter().enumerate() {
+            let f = founded_in(planet, i);
+            assert!((20..=470).contains(&f), "{} founded in year {f}", s.name);
+            assert_eq!(realm_in(planet, i, PRESENT_YEAR), Some(s.realm_capital));
+            assert_eq!(population_in(planet, i, PRESENT_YEAR), s.population);
+            assert_eq!(realm_in(planet, i, f - 1), None, "held before it existed");
+            assert_eq!(population_in(planet, i, f - 1), 0);
+            assert!(
+                population_in(planet, i, f) < s.population,
+                "{} must have grown since its founding",
+                s.name
+            );
+        }
+
+        // Allegiance changes hands somewhere, and only ever at the end of
+        // a decisive war between exactly the two realms involved.
+        let mut moved = 0usize;
+        for (i, _) in civ.settlements.iter().enumerate() {
+            let mut prev: Option<u32> = None;
+            for year in founded_in(planet, i)..=PRESENT_YEAR {
+                let now = realm_in(planet, i, year).expect("exists from founding");
+                if let Some(p) = prev {
+                    if p != now {
+                        moved += 1;
+                        assert!(
+                            hist.wars.iter().any(|w| w.end == year
+                                && w.victor == Some(now)
+                                && ((w.a == p && w.b == now) || (w.a == now && w.b == p))),
+                            "allegiance moved in year {year} without a war to move it"
+                        );
+                    }
+                }
+                prev = Some(now);
+            }
+        }
+        assert!(moved > 0, "five centuries of war moved no borders at all");
+
+        // Every year from the founding has exactly one ruler on the seat,
+        // and it is the one whose reign spans that year.
+        for cap in civ.settlements.iter().filter(|s| s.capital) {
+            let rh = hist.realm(cap.cell).unwrap();
+            assert!(hist.ruler_in(cap.cell, rh.founding_year - 1).is_none());
+            for year in rh.founding_year..=PRESENT_YEAR {
+                let r = hist.ruler_in(cap.cell, year).expect("someone holds the seat");
+                assert!(r.accession <= year && year <= r.death);
+            }
+            assert_eq!(
+                hist.ruler_in(cap.cell, PRESENT_YEAR).unwrap().name,
+                hist.current_ruler(cap.cell).unwrap().name
+            );
+        }
+
+        // Plagues bite: crossing an arrival year drops a capital's count.
+        let mut dipped = false;
+        for (i, s) in civ.settlements.iter().enumerate().filter(|(_, s)| s.capital) {
+            let rh = hist.realm(s.realm_capital).unwrap();
+            for p in &rh.plagues {
+                if p.arrival > founded_in(planet, i) + 1
+                    && population_in(planet, i, p.arrival) < population_in(planet, i, p.arrival - 1)
+                {
+                    dipped = true;
+                }
+            }
+        }
+        assert!(dipped, "two great plagues must show in somebody's numbers");
+
+        // Deterministic, like everything else.
+        let other = Planet::new(42);
+        for i in (0..civ.settlements.len()).step_by(11) {
+            assert_eq!(realm_in(planet, i, 250), realm_in(&other, i, 250));
+            assert_eq!(population_in(planet, i, 250), population_in(&other, i, 250));
+        }
     }
 
     #[test]

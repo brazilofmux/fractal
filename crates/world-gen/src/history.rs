@@ -47,20 +47,32 @@ pub struct RealmHistory {
     pub founding_year: u32,
     pub rulers: Vec<Ruler>,
     pub annals: Vec<Annal>,
+    pub plagues: Vec<Plague>,
 }
 
 pub struct History {
     realms: HashMap<u32, RealmHistory>,
+    /// Every war of the era, kept structured — the annals cite them as
+    /// prose, the fourth coordinate replays them as facts.
+    pub wars: Vec<War>,
 }
 
-struct War {
-    a: u32, // capital cells
-    b: u32,
-    start: u32,
-    end: u32,
-    cause: &'static str,
+pub struct War {
+    /// The belligerents' capital cells.
+    pub a: u32,
+    pub b: u32,
+    pub start: u32,
+    pub end: u32,
+    pub cause: &'static str,
     /// Winner's capital cell; None is a white peace.
-    victor: Option<u32>,
+    pub victor: Option<u32>,
+}
+
+/// One plague's visit to one realm.
+pub struct Plague {
+    pub arrival: u32,
+    /// Portion of the realm it took, in percent.
+    pub toll_pct: u32,
 }
 
 impl History {
@@ -248,14 +260,19 @@ impl History {
                     ),
                 });
             }
+            let mut plagues = Vec::new();
             for (i, &py) in plague_years.iter().enumerate() {
                 let arrival = if realm.has_port {
                     py
                 } else {
                     py + 1 + (hash3(rs, i as i64, 3, 0) % 2) as u32
                 };
-                let toll = ["a third", "a quarter", "one soul in five"]
-                    [(hash3(rs, i as i64, 4, 0) % 3) as usize];
+                let toll_idx = (hash3(rs, i as i64, 4, 0) % 3) as usize;
+                let toll = ["a third", "a quarter", "one soul in five"][toll_idx];
+                plagues.push(Plague {
+                    arrival,
+                    toll_pct: [33, 25, 20][toll_idx],
+                });
                 annals.push(Annal {
                     year: arrival,
                     text: format!(
@@ -309,11 +326,12 @@ impl History {
                     founding_year,
                     rulers,
                     annals,
+                    plagues,
                 },
             );
         }
 
-        Self { realms: map }
+        Self { realms: map, wars }
     }
 
     pub fn realm(&self, capital_cell: u32) -> Option<&RealmHistory> {
@@ -323,6 +341,17 @@ impl History {
     /// The reigning ruler of the realm holding `capital_cell`.
     pub fn current_ruler(&self, capital_cell: u32) -> Option<&Ruler> {
         self.realms.get(&capital_cell).and_then(|r| r.rulers.last())
+    }
+
+    /// The ruler on the seat in a given year; None before the founding.
+    /// Reigns abut exactly (each death year is the next accession year),
+    /// so every year from the founding to the present has one answer.
+    pub fn ruler_in(&self, capital_cell: u32, year: u32) -> Option<&Ruler> {
+        let rh = self.realms.get(&capital_cell)?;
+        rh.rulers.iter().find(|r| {
+            r.accession <= year
+                && (year < r.death || (year == r.death && r.death == PRESENT_YEAR))
+        })
     }
 }
 

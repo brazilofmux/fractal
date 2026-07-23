@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
+world-core = { path = "../world-core" }
 world-gen = { path = "../world-gen" }
 world-tiles = { path = "../world-tiles" }
 lore = { path = "../../lore" }
