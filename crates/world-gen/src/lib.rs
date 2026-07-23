@@ -43,8 +43,9 @@ pub const GEN_VERSION: u32 = 18;
 /// context assembly or any generator fact feeding it changes meaning.
 /// (16: honest sea lanes redrew the trade map, and with it every "buys X
 /// from Y" the chronicler had been told. 17: settlements came ashore —
-/// positions, and every distance and bearing derived from them, moved.)
-pub const LORE_VERSION: u32 = 17;
+/// positions, and every distance and bearing derived from them, moved.
+/// 18: the manor roll — ledgers rebuilt from the land up.)
+pub const LORE_VERSION: u32 = 18;
 
 // Stage tags: each pipeline stage draws from its own seed stream.
 const STAGE_CONTINENTS: u64 = 0xC0_4713;
@@ -1094,14 +1095,58 @@ mod tests {
             );
         }
 
-        // Ledgers: every realm collects something, and the total is the
-        // sum over its settlements — taxes don't leak.
-        let mut total: u64 = 0;
+        // The manor roll: every settlement's land yields something, dues
+        // are exactly the third penny of what reaches each holding, and
+        // every mark in a crown's ledger traces to the manor that paid it.
+        let peers = planet.peerage();
         for (i, s) in civ.settlements.iter().enumerate() {
-            total += s.population as u64 * econ.wealth[i] as u64 / 40;
+            assert!(econ.manor_income[i] > 0, "{} yields nothing", s.name);
+            if s.capital {
+                assert_eq!(econ.manor_sends[i], 0, "the crown pays no one");
+                assert_eq!(
+                    econ.realm_ledger[&s.cell],
+                    econ.manor_income[i] + econ.manor_receives[i],
+                    "{}'s ledger is not demesne plus dues",
+                    s.name
+                );
+            } else {
+                assert_eq!(
+                    econ.manor_sends[i],
+                    (econ.manor_income[i] + econ.manor_receives[i]) / 3,
+                    "{} pays other than the third penny",
+                    s.name
+                );
+            }
+            // What arrives is exactly what the vassals sent.
+            let sent_here: u64 = civ
+                .settlements
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    peers
+                        .holding(t.cell)
+                        .is_some_and(|h| h.liege_cell == s.cell)
+                })
+                .map(|(j, _)| econ.manor_sends[j])
+                .sum();
+            assert_eq!(econ.manor_receives[i], sent_here, "dues leak at {}", s.name);
         }
-        assert_eq!(total, econ.realm_ledger.values().sum::<u64>());
+        // Conservation to the last penny: everything the land yields is
+        // either kept at some rung or sits in a crown's ledger.
+        let yielded: u64 = econ.manor_income.iter().sum();
+        let kept: u64 = (0..civ.settlements.len())
+            .filter(|&i| !civ.settlements[i].capital)
+            .map(|i| econ.manor_income[i] + econ.manor_receives[i] - econ.manor_sends[i])
+            .sum();
+        let crowns: u64 = econ.realm_ledger.values().sum();
+        assert_eq!(yielded, kept + crowns, "marks leaked in the climb");
         assert!(econ.realm_ledger.values().all(|&v| v > 0));
+        // Somewhere a town lord is collecting dues — the web carries money.
+        assert!(
+            (0..civ.settlements.len())
+                .any(|i| !civ.settlements[i].capital && econ.manor_receives[i] > 0),
+            "no lord in the world collects a due"
+        );
 
         // Deterministic.
         let other = Planet::new(42);

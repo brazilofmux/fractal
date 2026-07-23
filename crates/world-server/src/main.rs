@@ -281,6 +281,32 @@ async fn lore_entry(
                 "Wealth: {}",
                 world_gen::Economy::wealth_word(econ.wealth[i])
             ));
+            // The manor roll — every ledger is some manor's marks.
+            let s = &civ.settlements[i];
+            if s.capital {
+                lines.push(format!(
+                    "Crown demesne: {} marks a year · dues received: {}",
+                    econ.manor_income[i], econ.manor_receives[i]
+                ));
+            } else {
+                let liege = app
+                    .planet
+                    .peerage()
+                    .holding(s.cell)
+                    .and_then(|h| civ.settlements.iter().find(|t| t.cell == h.liege_cell))
+                    .map(|t| if t.capital { "the crown".into() } else { format!("the lord of {}", t.name) })
+                    .unwrap_or_else(|| "the crown".to_string());
+                lines.push(format!(
+                    "Manor roll: {} marks a year · third penny to {}: {}",
+                    econ.manor_income[i], liege, econ.manor_sends[i]
+                ));
+                if econ.manor_receives[i] > 0 {
+                    lines.push(format!(
+                        "Dues from manors held of it: {} marks",
+                        econ.manor_receives[i]
+                    ));
+                }
+            }
             if !econ.produces[i].is_empty() {
                 lines.push(format!(
                     "Makes: {}",

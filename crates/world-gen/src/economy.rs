@@ -83,7 +83,15 @@ pub struct Economy {
     /// Per road index: goods and volumes crossing it.
     pub road_flows: Vec<Vec<(Good, u32)>>,
     pub lanes: Vec<Lane>,
-    /// Capital cell → yearly ledger in "marks" (arbitrary era coin).
+    /// Per settlement: what its land yields in marks a year — the manor
+    /// roll, from which every ledger below is built.
+    pub manor_income: Vec<u64>,
+    /// Per settlement: the third penny sent up to its liege each year.
+    pub manor_sends: Vec<u64>,
+    /// Per settlement: dues received from manors held of it.
+    pub manor_receives: Vec<u64>,
+    /// Capital cell → yearly ledger in "marks": the crown's demesne income
+    /// plus every due that survived the climb up the tenure web.
     pub realm_ledger: HashMap<u32, u64>,
 }
 
@@ -309,11 +317,65 @@ impl Economy {
             })
             .collect();
 
-        // ---- The ledgers: taxes climb the tenure web. ---------------------
+        // ---- The manor roll: what the land itself yields. -----------------
+        // The goods a place produces are already geography's verdict
+        // (arable is grain, pasture wool, woodland timber, fishery fish),
+        // so the roll rides on them: a rate per thirty heads, worked by
+        // however many heads there are.
+        let manor_income: Vec<u64> = (0..n)
+            .map(|i| {
+                let mut rate: u64 = 4; // subsistence tillage, everywhere
+                for g in &produces[i] {
+                    rate += match g {
+                        Good::Grain | Good::Salt => 3,
+                        Good::Fish | Good::Timber | Good::Wool | Good::Furs => 2,
+                        Good::Iron | Good::Wine => 4,
+                        Good::Spice => 5,
+                    };
+                }
+                civ.settlements[i].population as u64 * rate / 30
+            })
+            .collect();
+
+        // ---- Dues climb the tenure web: the third penny. ------------------
+        // Each holding sends a third of everything that reaches it — its
+        // own land's yield plus the dues of manors held of it — up to its
+        // liege. Villages pay their town lord, town lords pay the crown,
+        // and the crown keeps what survives the climb. Integer arithmetic
+        // throughout: every mark in a ledger is some manor's mark, and the
+        // conservation test holds to the last penny.
+        let peers = planet.peerage();
+        let index_of: HashMap<u32, usize> = civ
+            .settlements
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.cell, i))
+            .collect();
+        let mut manor_sends = vec![0u64; n];
+        let mut manor_receives = vec![0u64; n];
+        // Villages settle up before their liege towns do; chains are two
+        // rungs at most, so rank order is settlement order enough.
+        for rank in [3u8, 2u8] {
+            for i in 0..n {
+                let s = &civ.settlements[i];
+                if s.capital || s.kind.rank() != rank {
+                    continue;
+                }
+                let Some(hold) = peers.holding(s.cell) else {
+                    continue;
+                };
+                let due = (manor_income[i] + manor_receives[i]) / 3;
+                manor_sends[i] = due;
+                if let Some(&li) = index_of.get(&hold.liege_cell) {
+                    manor_receives[li] += due;
+                }
+            }
+        }
         let mut realm_ledger: HashMap<u32, u64> = HashMap::new();
         for (i, s) in civ.settlements.iter().enumerate() {
-            let take = s.population as u64 * wealth[i] as u64 / 40;
-            *realm_ledger.entry(s.realm_capital).or_insert(0) += take;
+            if s.capital {
+                realm_ledger.insert(s.cell, manor_income[i] + manor_receives[i]);
+            }
         }
 
         Self {
@@ -323,6 +385,9 @@ impl Economy {
             wealth,
             road_flows,
             lanes,
+            manor_income,
+            manor_sends,
+            manor_receives,
             realm_ledger,
         }
     }

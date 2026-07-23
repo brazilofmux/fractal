@@ -511,6 +511,50 @@ fn settlement_facts(planet: &Planet, i: usize) -> String {
         "by the standards of the age it is {}",
         world_gen::Economy::wealth_word(econ.wealth[i])
     ));
+    // The manor roll: what the land yields and where the money goes.
+    if s.capital {
+        line(format!(
+            "the crown's demesne here yields some {} marks a year, and {} more \
+             arrive in dues from the realm's manors",
+            econ.manor_income[i], econ.manor_receives[i]
+        ));
+    } else {
+        let sends = econ.manor_sends[i];
+        let keeps = econ.manor_income[i] + econ.manor_receives[i] - sends;
+        let liege = planet
+            .peerage()
+            .holding(s.cell)
+            .and_then(|h| civ.settlements.iter().find(|t| t.cell == h.liege_cell))
+            .map(|t| {
+                if t.capital {
+                    "the crown".to_string()
+                } else {
+                    format!("the lord of {}", t.name)
+                }
+            })
+            .unwrap_or_else(|| "the crown".to_string());
+        line(format!(
+            "the manor roll: its lands yield some {} marks a year; the third \
+             penny — {} marks — goes up to {}; {} marks stay with the holder",
+            econ.manor_income[i], sends, liege, keeps
+        ));
+        let vassal_manors = civ
+            .settlements
+            .iter()
+            .filter(|t| {
+                planet
+                    .peerage()
+                    .holding(t.cell)
+                    .is_some_and(|h| h.liege_cell == s.cell)
+            })
+            .count();
+        if econ.manor_receives[i] > 0 {
+            line(format!(
+                "{} lesser manors are held of its lord, paying {} marks in dues",
+                vassal_manors, econ.manor_receives[i]
+            ));
+        }
+    }
     if !econ.produces[i].is_empty() {
         line(format!(
             "it produces {}",
@@ -604,11 +648,17 @@ fn realm_facts(planet: &Planet, capital: usize) -> String {
         );
     }
 
-    // The crown's income, for a chronicle that knows what a war costs.
+    // The crown's income, for a chronicle that knows what a war costs —
+    // and where every mark of it was raised.
     if let Some(marks) = planet.economy().realm_ledger.get(&cap.cell) {
+        let econ = planet.economy();
         line(
             &mut f,
-            format!("the crown's ledger runs to some {marks} marks a year"),
+            format!(
+                "the crown's ledger runs to some {marks} marks a year — {} from \
+                 the royal demesne, {} in dues climbed up from the realm's manors",
+                econ.manor_income[capital], econ.manor_receives[capital]
+            ),
         );
     }
 
